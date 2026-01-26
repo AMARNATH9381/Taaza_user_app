@@ -11,6 +11,7 @@ import MilkPlan from './pages/MilkPlan';
 import Profile from './pages/Profile';
 import Wallet from './pages/Wallet';
 import Orders from './pages/Orders';
+import CategoryStore from './pages/CategoryStore';
 
 // Scroll to top on route change
 const ScrollToTop = () => {
@@ -34,6 +35,8 @@ const App: React.FC = () => {
         <Route path="/order-success" element={<OrderSuccess />} />
         <Route path="/meat" element={<MeatOrder />} />
         <Route path="/milk/*" element={<MilkPlan />} />
+        <Route path="/vegetables" element={<CategoryStore type="vegetables" />} />
+        <Route path="/fruits" element={<CategoryStore type="fruits" />} />
         <Route path="/profile/*" element={<Profile />} />
         <Route path="/wallet/*" element={<Wallet />} />
         <Route path="/orders" element={<Orders />} />
