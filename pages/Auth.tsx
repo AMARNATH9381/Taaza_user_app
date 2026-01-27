@@ -7,8 +7,8 @@ const LegalPageLayout: React.FC<{ title: string; children: React.ReactNode }> = 
   return (
     <div className="min-h-screen bg-white flex flex-col animate-slide-up">
       <div className="bg-white sticky top-0 z-20 px-4 py-3 border-b border-gray-100 flex items-center">
-        <button 
-          onClick={() => navigate(-1)} 
+        <button
+          onClick={() => navigate(-1)}
           className="p-2 -ml-2 rounded-full hover:bg-gray-100 transition-colors text-gray-700"
         >
           <span className="material-symbols-outlined">arrow_back</span>
@@ -26,19 +26,19 @@ const TermsOfService: React.FC = () => (
   <LegalPageLayout title="Terms of Service">
     <p><strong>Last Updated: October 26, 2023</strong></p>
     <p>Welcome to Taaza. By accessing or using our mobile application and services, you agree to be bound by these Terms of Service.</p>
-    
+
     <h3 className="text-gray-900 font-bold text-base mt-4">1. Use of Services</h3>
     <p>You must be at least 18 years old to use our services. You agree to provide accurate and complete information during registration and to keep your account information updated.</p>
-    
+
     <h3 className="text-gray-900 font-bold text-base mt-4">2. Orders and Deliveries</h3>
     <p>All orders are subject to availability. We reserve the right to cancel orders at our discretion. Delivery times are estimates and may vary based on traffic, weather, and other factors.</p>
-    
+
     <h3 className="text-gray-900 font-bold text-base mt-4">3. Pricing and Payments</h3>
     <p>Prices are listed in Indian Rupees (INR) and are subject to change without notice. Payment must be made at the time of order or via approved payment methods upon delivery.</p>
-    
+
     <h3 className="text-gray-900 font-bold text-base mt-4">4. Cancellation and Refunds</h3>
     <p>You may cancel your order within 5 minutes of placing it. Refunds for cancelled orders or quality issues will be processed to your Taaza Wallet or original payment method within 5-7 business days.</p>
-    
+
     <h3 className="text-gray-900 font-bold text-base mt-4">5. User Conduct</h3>
     <p>You agree not to misuse our services, including but not limited to fraudulent activities, harassment of delivery partners, or violation of applicable laws.</p>
   </LegalPageLayout>
@@ -48,10 +48,10 @@ const PrivacyPolicy: React.FC = () => (
   <LegalPageLayout title="Privacy Policy">
     <p><strong>Effective Date: October 26, 2023</strong></p>
     <p>At Taaza, we take your privacy seriously. This Privacy Policy explains how we collect, use, and protect your personal information.</p>
-    
+
     <h3 className="text-gray-900 font-bold text-base mt-4">1. Information We Collect</h3>
     <p>We collect information you provide directly to us, such as your name, email address, phone number, and delivery address. We also collect transaction data and location information to facilitate deliveries.</p>
-    
+
     <h3 className="text-gray-900 font-bold text-base mt-4">2. How We Use Your Information</h3>
     <ul className="list-disc pl-5 space-y-1">
       <li>To process and deliver your orders.</li>
@@ -59,10 +59,10 @@ const PrivacyPolicy: React.FC = () => (
       <li>To improve our app functionality and user experience.</li>
       <li>To prevent fraud and ensure the safety of our platform.</li>
     </ul>
-    
+
     <h3 className="text-gray-900 font-bold text-base mt-4">3. Data Sharing</h3>
     <p>We do not sell your personal data. We may share information with third-party service providers (e.g., payment processors, delivery partners) solely for the purpose of fulfilling our services.</p>
-    
+
     <h3 className="text-gray-900 font-bold text-base mt-4">4. Data Security</h3>
     <p>We implement industry-standard security measures to protect your data. However, no method of transmission over the internet is 100% secure.</p>
   </LegalPageLayout>
@@ -106,12 +106,13 @@ const Login: React.FC = () => {
   const [error, setError] = useState('');
   const [suggestion, setSuggestion] = useState('');
   const [shake, setShake] = useState(false);
+  const [isFocused, setIsFocused] = useState(false);
 
   // Common email domain typos dictionary
   const getTypoSuggestion = (emailStr: string) => {
     const parts = emailStr.split('@');
     if (parts.length !== 2) return '';
-    
+
     const domain = parts[1].toLowerCase();
     const typos: Record<string, string> = {
       'gmil.com': 'gmail.com',
@@ -154,7 +155,7 @@ const Login: React.FC = () => {
       return false;
     }
     setError('');
-    
+
     // Final check for typos before proceeding
     const suggested = getTypoSuggestion(emailToCheck);
     if (suggested) {
@@ -166,7 +167,7 @@ const Login: React.FC = () => {
   const handleEmailChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     setEmail(val);
-    
+
     if (error) setError('');
 
     // Real-time typo detection
@@ -177,12 +178,26 @@ const Login: React.FC = () => {
   const handleSendOtp = () => {
     if (validate()) {
       setIsLoading(true);
-      // Simulate API delay
-      setTimeout(() => {
-        localStorage.setItem('taaza_user_email', email);
-        setIsLoading(false);
-        navigate('/auth/otp');
-      }, 1000);
+
+      fetch('/api/send-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      })
+        .then(res => {
+          if (!res.ok) throw new Error('Failed to send OTP');
+          return res.json();
+        })
+        .then(() => {
+          localStorage.setItem('taaza_user_email', email);
+          setIsLoading(false);
+          navigate('/auth/otp');
+        })
+        .catch(err => {
+          setIsLoading(false);
+          setError('Failed to send OTP. Please try again.');
+          console.error(err);
+        });
     } else {
       setShake(true);
       setTimeout(() => setShake(false), 500);
@@ -217,22 +232,23 @@ const Login: React.FC = () => {
           <p className="text-lg text-primary font-medium mb-8">
             Straight from the Farm to Your Door
           </p>
-          
+
           <div className="bg-white/10 backdrop-blur-md p-6 rounded-2xl border border-white/10 shadow-xl">
             <h2 className="text-xl font-medium text-white mb-6">Login or Sign up</h2>
-            
+
             <div className="relative mb-8">
-              <div 
-                className={`flex shadow-inner rounded-xl overflow-hidden border bg-white transition-all duration-300 ${error ? 'border-red-500' : 'border-white/20'} ${shake ? 'animate-shake' : ''}`}
+              <div
+                className={`flex shadow-inner rounded-xl overflow-hidden border bg-white transition-all duration-300 ${error ? 'border-red-500' : isFocused ? 'border-primary ring-2 ring-primary/20' : 'border-white/20'} ${shake ? 'animate-shake' : ''}`}
               >
-                <div className={`flex items-center justify-center w-14 bg-gray-50 border-r border-gray-200 ${error ? 'text-red-500' : 'text-gray-500'}`}>
+                <div className={`flex items-center justify-center w-14 bg-gray-50 border-r border-gray-200 transition-colors ${error ? 'text-red-500' : isFocused ? 'text-primary' : 'text-gray-500'}`}>
                   <span className="material-symbols-outlined">mail</span>
                 </div>
-                <input 
-                  type="email" 
+                <input
+                  type="email"
                   value={email}
                   onChange={handleEmailChange}
-                  onBlur={() => validate()}
+                  onFocus={() => setIsFocused(true)}
+                  onBlur={() => { setIsFocused(false); validate(); }}
                   onKeyDown={(e) => e.key === 'Enter' && handleSendOtp()}
                   className="w-full h-14 px-4 bg-white text-zepto-blue placeholder-gray-400 focus:outline-none font-semibold text-lg"
                   placeholder="Email Address"
@@ -250,7 +266,7 @@ const Login: React.FC = () => {
 
               {/* Typo Suggestion */}
               {!error && suggestion && (
-                <div 
+                <div
                   className="absolute -bottom-7 left-0 right-0 flex items-center justify-center gap-1 text-zepto-yellow text-xs animate-slide-up cursor-pointer hover:underline bg-black/20 py-1 rounded-full backdrop-blur-sm"
                   onClick={handleApplySuggestion}
                 >
@@ -260,12 +276,11 @@ const Login: React.FC = () => {
               )}
             </div>
 
-            <button 
+            <button
               onClick={handleSendOtp}
               disabled={isLoading || !email}
-              className={`w-full bg-primary text-zepto-blue font-bold py-4 rounded-xl text-lg shadow-lg hover:bg-yellow-400 transition-all flex items-center justify-center gap-2 ${
-                (isLoading || !email) ? 'opacity-70 cursor-not-allowed' : 'active:scale-[0.98]'
-              }`}
+              className={`w-full bg-primary text-zepto-blue font-bold py-4 rounded-xl text-lg shadow-lg hover:bg-yellow-400 transition-all flex items-center justify-center gap-2 ${(isLoading || !email) ? 'opacity-70 cursor-not-allowed' : 'active:scale-[0.98]'
+                }`}
             >
               {isLoading ? (
                 <span className="w-5 h-5 border-2 border-zepto-blue border-t-transparent rounded-full animate-spin"></span>
@@ -279,15 +294,15 @@ const Login: React.FC = () => {
 
             <p className="text-[10px] text-blue-200 mt-6 leading-tight max-w-xs mx-auto">
               By continuing, you agree to our{' '}
-              <button 
-                onClick={() => navigate('/auth/terms')} 
+              <button
+                onClick={() => navigate('/auth/terms')}
                 className="underline cursor-pointer hover:text-white transition-colors font-medium"
               >
                 Terms of Service
               </button>
               {' '}&{' '}
-              <button 
-                onClick={() => navigate('/auth/privacy')} 
+              <button
+                onClick={() => navigate('/auth/privacy')}
                 className="underline cursor-pointer hover:text-white transition-colors font-medium"
               >
                 Privacy Policy
@@ -348,11 +363,11 @@ const OTP: React.FC = () => {
       }
     });
     setOtp(newOtp);
-    
+
     // Focus the next empty input or the last one
     const nextIndex = Math.min(pastedData.length, 5);
     inputsRef.current[nextIndex]?.focus();
-    
+
     // Auto submit if filled
     if (newOtp.every(d => d !== '') && newOtp.length === 6) {
       verifyOtp(newOtp);
@@ -374,10 +389,43 @@ const OTP: React.FC = () => {
   const verifyOtp = (currentOtp: string[]) => {
     if (currentOtp.join('').length === 6) {
       setIsVerifying(true);
-      setTimeout(() => {
-        setIsVerifying(false);
-        navigate('/auth/register');
-      }, 1500);
+
+      const code = currentOtp.join('');
+      fetch('/api/verify-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: userEmail, code })
+      })
+        .then(res => {
+          if (!res.ok) throw new Error('Invalid OTP');
+          return res.json();
+        })
+        .then(data => {
+          setIsVerifying(false);
+          if (data.success) {
+            // Save token if needed, for now just flow
+            localStorage.setItem('taaza_auth_token', data.token); // Mock token
+
+            if (data.isNewUser) {
+              navigate('/auth/register');
+            } else {
+              // Fetch profile to get name for welcome screen if existing
+              fetch(`/api/profile?email=${userEmail}`)
+                .then(res => res.json())
+                .then(user => {
+                  if (user.name) localStorage.setItem('taaza_user_name', user.name);
+                  navigate('/auth/welcome');
+                })
+                .catch(() => navigate('/auth/welcome'));
+            }
+          }
+        })
+        .catch(err => {
+          setIsVerifying(false);
+          setShake(true);
+          setTimeout(() => setShake(false), 500);
+          console.error(err);
+        });
     } else {
       setShake(true);
       setTimeout(() => setShake(false), 500);
@@ -390,6 +438,18 @@ const OTP: React.FC = () => {
     setTimer(30);
     setOtp(['', '', '', '', '', '']);
     inputsRef.current[0]?.focus();
+
+    // Actually resend OTP via API
+    fetch('/api/send-otp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: userEmail })
+    })
+      .then(res => {
+        if (!res.ok) throw new Error('Failed to resend');
+        console.log('OTP resent successfully');
+      })
+      .catch(err => console.error('Failed to resend OTP:', err));
   };
 
   return (
@@ -405,10 +465,10 @@ const OTP: React.FC = () => {
         }
       `}</style>
       <div className="shape-background"></div>
-      
+
       {/* Back Button */}
-      <button 
-        onClick={() => navigate('/auth/login')} 
+      <button
+        onClick={() => navigate('/auth/login')}
         className="absolute top-6 left-6 p-2 bg-white/10 rounded-full text-white hover:bg-white/20 z-20 backdrop-blur-md"
       >
         <span className="material-symbols-outlined">arrow_back</span>
@@ -428,7 +488,7 @@ const OTP: React.FC = () => {
             {/* CARD TITLE: VERIFICATION */}
             <h2 className="text-xl font-medium text-white mb-2">Verification Code</h2>
             <p className="text-blue-200 text-xs mb-6">Please enter the 6-digit code sent to your email</p>
-            
+
             {/* Improved Email Display */}
             <div className="flex items-center justify-between bg-white/5 rounded-xl p-3 px-4 mb-6 border border-white/10 shadow-inner">
               <div className="flex flex-col text-left overflow-hidden mr-2">
@@ -436,14 +496,14 @@ const OTP: React.FC = () => {
                   {userEmail}
                 </span>
               </div>
-              <button 
+              <button
                 onClick={() => navigate('/auth/login')}
                 className="text-primary text-xs font-bold hover:text-white transition-colors shrink-0 bg-white/5 px-2 py-1 rounded hover:bg-white/10"
               >
                 CHANGE
               </button>
             </div>
-            
+
             <div className={`flex justify-between gap-2 mb-8 ${shake ? 'animate-shake' : ''}`}>
               {otp.map((digit, index) => (
                 <input
@@ -457,23 +517,22 @@ const OTP: React.FC = () => {
                   onChange={(e) => handleChange(index, e.target.value)}
                   onKeyDown={(e) => handleKeyDown(index, e)}
                   className={`w-11 h-14 text-center text-xl font-bold rounded-xl transition-all outline-none 
-                    ${digit 
-                      ? 'bg-white text-zepto-blue shadow-lg scale-105 transform border-2 border-white' 
+                    ${digit
+                      ? 'bg-white text-zepto-blue shadow-lg scale-105 transform border-2 border-white'
                       : 'bg-white/5 text-white border border-white/20 focus:border-primary focus:bg-white/10'}
                   `}
                 />
               ))}
             </div>
 
-            <button 
+            <button
               onClick={handleVerifyClick}
               disabled={isVerifying || otp.join('').length !== 6}
-              className={`w-full bg-primary text-zepto-blue font-bold py-3.5 rounded-xl text-lg shadow-lg hover:bg-yellow-400 transition-all mb-4 flex items-center justify-center gap-2 ${
-                (isVerifying || otp.join('').length !== 6) ? 'opacity-70 cursor-not-allowed' : 'active:scale-[0.98]'
-              }`}
+              className={`w-full bg-primary text-zepto-blue font-bold py-3.5 rounded-xl text-lg shadow-lg hover:bg-yellow-400 transition-all mb-4 flex items-center justify-center gap-2 ${(isVerifying || otp.join('').length !== 6) ? 'opacity-70 cursor-not-allowed' : 'active:scale-[0.98]'
+                }`}
             >
               {isVerifying ? (
-                 <span className="w-5 h-5 border-2 border-zepto-blue border-t-transparent rounded-full animate-spin"></span>
+                <span className="w-5 h-5 border-2 border-zepto-blue border-t-transparent rounded-full animate-spin"></span>
               ) : 'Verify & Proceed'}
             </button>
 
@@ -483,7 +542,7 @@ const OTP: React.FC = () => {
                   Resend code in <span className="font-bold text-white">00:{timer.toString().padStart(2, '0')}</span>
                 </p>
               ) : (
-                <button 
+                <button
                   onClick={handleResend}
                   className="text-white font-semibold text-xs hover:text-primary transition-colors flex items-center justify-center gap-1 mx-auto"
                 >
@@ -526,12 +585,28 @@ const Register: React.FC = () => {
     }
 
     setIsLoading(true);
-    setTimeout(() => {
-      localStorage.setItem('taaza_user_name', name.trim());
-      localStorage.setItem('taaza_mobile', mobile);
-      setIsLoading(false);
-      navigate('/auth/welcome');
-    }, 1500);
+    const email = localStorage.getItem('taaza_user_email');
+
+    fetch('/api/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, name, mobile, dob: '', gender: '' })
+    })
+      .then(res => {
+        if (res.status === 409) throw new Error('Mobile number already registered');
+        if (!res.ok) throw new Error('Registration failed');
+        return res.json();
+      })
+      .then(() => {
+        localStorage.setItem('taaza_user_name', name.trim());
+        localStorage.setItem('taaza_mobile', mobile);
+        setIsLoading(false);
+        navigate('/auth/welcome');
+      })
+      .catch(err => {
+        setIsLoading(false);
+        setError(err.message || 'Registration failed');
+      });
   };
 
   return (
@@ -547,9 +622,9 @@ const Register: React.FC = () => {
         }
       `}</style>
       <div className="shape-background"></div>
-      
+
       {/* Back Button */}
-      <button 
+      <button
         onClick={() => navigate('/auth/login')}
         className="absolute top-6 left-6 p-2 bg-white/10 rounded-full text-white hover:bg-white/20 z-20 backdrop-blur-md"
       >
@@ -567,21 +642,21 @@ const Register: React.FC = () => {
 
           <div className="bg-white/10 backdrop-blur-md p-6 rounded-2xl border border-white/10 shadow-xl">
             <h2 className="text-xl font-medium text-white mb-6">Complete Profile</h2>
-            
+
             <div className={`space-y-5 mb-8 ${shake ? 'animate-shake' : ''}`}>
-              
+
               {/* Name Input */}
               <div className="relative">
                 <div className={`flex shadow-inner rounded-xl overflow-hidden border bg-white transition-all duration-300 ${error && name.length < 2 ? 'border-red-500' : 'border-white/20'}`}>
                   <div className="flex items-center justify-center w-14 bg-gray-50 border-r border-gray-200 text-gray-400">
                     <span className="material-symbols-outlined">person</span>
                   </div>
-                  <input 
-                    type="text" 
+                  <input
+                    type="text"
                     value={name}
                     onChange={(e) => {
-                        setName(e.target.value);
-                        if(error) setError('');
+                      setName(e.target.value);
+                      if (error) setError('');
                     }}
                     className="w-full h-14 px-4 bg-white text-zepto-blue placeholder-gray-400 focus:outline-none font-semibold text-lg"
                     placeholder="Full Name"
@@ -597,14 +672,14 @@ const Register: React.FC = () => {
                     <img src="https://flagcdn.com/w20/in.png" alt="IN" className="w-5 h-auto mr-1.5 shadow-sm rounded-sm" />
                     +91
                   </div>
-                  <input 
-                    type="tel" 
+                  <input
+                    type="tel"
                     value={mobile}
                     maxLength={10}
                     onChange={(e) => {
-                        const val = e.target.value.replace(/\D/g, '');
-                        setMobile(val);
-                        if(error) setError('');
+                      const val = e.target.value.replace(/\D/g, '');
+                      setMobile(val);
+                      if (error) setError('');
                     }}
                     className="w-full h-14 px-4 bg-white text-zepto-blue placeholder-gray-400 focus:outline-none font-semibold text-lg tracking-wider"
                     placeholder="Mobile Number"
@@ -615,26 +690,25 @@ const Register: React.FC = () => {
               {/* Error Display */}
               {error && (
                 <div className="flex items-center justify-center gap-2 text-red-300 text-xs font-medium bg-red-900/20 p-2 rounded-lg border border-red-500/20 animate-slide-up">
-                   <span className="material-symbols-outlined text-sm">error</span>
-                   {error}
+                  <span className="material-symbols-outlined text-sm">error</span>
+                  {error}
                 </div>
               )}
 
             </div>
 
-            <button 
+            <button
               onClick={handleRegister}
               disabled={isLoading}
-              className={`w-full bg-primary text-zepto-blue font-bold py-4 rounded-xl text-lg shadow-lg hover:bg-yellow-400 transition-all flex items-center justify-center gap-2 ${
-                isLoading ? 'opacity-70 cursor-not-allowed' : 'active:scale-[0.98]'
-              }`}
+              className={`w-full bg-primary text-zepto-blue font-bold py-4 rounded-xl text-lg shadow-lg hover:bg-yellow-400 transition-all flex items-center justify-center gap-2 ${isLoading ? 'opacity-70 cursor-not-allowed' : 'active:scale-[0.98]'
+                }`}
             >
               {isLoading ? (
-                 <span className="w-5 h-5 border-2 border-zepto-blue border-t-transparent rounded-full animate-spin"></span>
+                <span className="w-5 h-5 border-2 border-zepto-blue border-t-transparent rounded-full animate-spin"></span>
               ) : (
                 <>
-                    Finish Setup
-                    <span className="material-symbols-outlined text-sm">check_circle</span>
+                  Finish Setup
+                  <span className="material-symbols-outlined text-sm">check_circle</span>
                 </>
               )}
             </button>
@@ -653,26 +727,26 @@ const Welcome: React.FC = () => {
   useEffect(() => {
     const timer = setTimeout(() => {
       navigate('/home');
-    }, 3000); 
+    }, 3000);
     return () => clearTimeout(timer);
   }, [navigate]);
 
   return (
     <div className="relative flex flex-col items-center justify-center min-h-screen bg-zepto-blue p-6 text-center overflow-hidden">
       <div className="shape-background"></div>
-      
+
       {/* Confetti Effect */}
       <div className="absolute inset-0 pointer-events-none overflow-hidden">
         {[...Array(20)].map((_, i) => (
-            <div key={i} className="absolute animate-[fall_3s_linear_infinite]" style={{
-                left: `${Math.random() * 100}%`,
-                top: `-${Math.random() * 20}%`,
-                animationDelay: `${Math.random() * 2}s`,
-                width: '8px',
-                height: '8px',
-                backgroundColor: ['#FFD700', '#FF6B6B', '#4ECDC4', '#FFFFFF'][Math.floor(Math.random() * 4)],
-                borderRadius: Math.random() > 0.5 ? '50%' : '0',
-            }}></div>
+          <div key={i} className="absolute animate-[fall_3s_linear_infinite]" style={{
+            left: `${Math.random() * 100}%`,
+            top: `-${Math.random() * 20}%`,
+            animationDelay: `${Math.random() * 2}s`,
+            width: '8px',
+            height: '8px',
+            backgroundColor: ['#FFD700', '#FF6B6B', '#4ECDC4', '#FFFFFF'][Math.floor(Math.random() * 4)],
+            borderRadius: Math.random() > 0.5 ? '50%' : '0',
+          }}></div>
         ))}
       </div>
       <style>{`
@@ -683,28 +757,28 @@ const Welcome: React.FC = () => {
 
       <div className="relative z-10 w-full max-w-sm mx-auto">
         <h1 className="text-5xl font-display font-bold uppercase tracking-wider text-white mb-2 animate-fade-in">
-            Taaza
+          Taaza
         </h1>
         <p className="text-lg text-primary font-medium mb-8 animate-fade-in delay-100">
-            Straight from the Farm to Your Door
+          Straight from the Farm to Your Door
         </p>
 
         <div className="bg-white/10 backdrop-blur-md p-8 rounded-2xl border border-white/10 shadow-2xl animate-slide-up">
-            <div className="w-24 h-24 bg-gradient-to-tr from-yellow-400 to-yellow-600 rounded-full flex items-center justify-center mx-auto mb-6 shadow-lg shadow-yellow-500/30 animate-[bounce_2s_infinite]">
-              <span className="material-symbols-outlined text-5xl text-white">celebration</span>
+          <div className="w-24 h-24 bg-gradient-to-tr from-yellow-400 to-yellow-600 rounded-full flex items-center justify-center mx-auto mb-6 shadow-lg shadow-yellow-500/30 animate-[bounce_2s_infinite]">
+            <span className="material-symbols-outlined text-5xl text-white">celebration</span>
+          </div>
+
+          <h2 className="text-3xl font-bold text-white mb-2">Welcome, {userName}!</h2>
+          <p className="text-blue-100/80 mb-8 text-sm leading-relaxed">
+            Your account has been created successfully.<br />Get ready for fresh deliveries!
+          </p>
+
+          <div className="w-full bg-white/5 border border-white/10 rounded-xl p-4 flex items-center justify-center gap-3">
+            <div className="w-5 h-5 rounded-full border-2 border-green-400 flex items-center justify-center">
+              <div className="w-3 h-3 bg-green-400 rounded-full animate-pulse"></div>
             </div>
-            
-            <h2 className="text-3xl font-bold text-white mb-2">Welcome, {userName}!</h2>
-            <p className="text-blue-100/80 mb-8 text-sm leading-relaxed">
-              Your account has been created successfully.<br/>Get ready for fresh deliveries!
-            </p>
-            
-            <div className="w-full bg-white/5 border border-white/10 rounded-xl p-4 flex items-center justify-center gap-3">
-                <div className="w-5 h-5 rounded-full border-2 border-green-400 flex items-center justify-center">
-                    <div className="w-3 h-3 bg-green-400 rounded-full animate-pulse"></div>
-                </div>
-                <span className="text-white font-medium text-sm tracking-wide">Redirecting to Home...</span>
-            </div>
+            <span className="text-white font-medium text-sm tracking-wide">Redirecting to Home...</span>
+          </div>
         </div>
       </div>
     </div>

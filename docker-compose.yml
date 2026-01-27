@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  frontend:
+    build: .
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - taaza-network
+
+  backend:
+    build: ./services/auth-service
+    environment:
+      - PORT=8080
+      - DATABASE_URL=postgres://taaza_user:taaza_pass@postgres:5432/taaza_db?sslmode=disable
+      - SMTP_EMAIL=amarnathmalasani2@gmail.com
+      - SMTP_PASSWORD=eiustppewepd cuxz
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+    networks:
+      - taaza-network
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=taaza_user
+      - POSTGRES_PASSWORD=taaza_pass
+      - POSTGRES_DB=taaza_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - taaza-network
+
+volumes:
+  postgres-data:
+
+
+networks:
+  taaza-network:
+    driver: bridge
