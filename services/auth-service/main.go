@@ -74,6 +74,24 @@ func initSchema() {
 	// Add status column if it doesn't exist (for existing tables)
 	db.Exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'Active'")
 	
+	// Add role column if it doesn't exist
+	db.Exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'user'")
+
+	// Seed Admin User (amarnathm9945@gmail.com)
+	// Upsert: Create if not exists, or update role to admin if exists
+	_, err = db.Exec(`
+		INSERT INTO users (email, mobile, name, role, status) 
+		VALUES ($1, $2, $3, 'admin', 'Active')
+		ON CONFLICT (email) 
+		DO UPDATE SET role = 'admin', status = 'Active', updated_at = NOW()
+	`, "amarnathm9945@gmail.com", "0000000000", "Admin User")
+	
+	if err != nil {
+		log.Println("Failed to seed/update admin:", err)
+	} else {
+		log.Println("Seeded/Updated admin user: amarnathm9945@gmail.com")
+	}
+	
 	log.Println("Schema initialized")
 }
 
@@ -91,6 +109,7 @@ type User struct {
 	Name      string    `json:"name"`
 	DOB       string    `json:"dob,omitempty"`
 	Gender    string    `json:"gender,omitempty"`
+	Role      string    `json:"role"`
 	Status    string    `json:"status"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -98,6 +117,7 @@ type User struct {
 // --- Request/Response Types ---
 type SendOTPRequest struct {
 	Email string `json:"email"`
+	Type  string `json:"type,omitempty"` // "admin" or "user"
 }
 
 type VerifyOTPRequest struct {
@@ -108,6 +128,7 @@ type VerifyOTPRequest struct {
 type VerifyOTPResponse struct {
 	Success   bool   `json:"success"`
 	Token     string `json:"token,omitempty"` // Mock token for now
+	Role      string `json:"role"`
 	IsNewUser bool   `json:"isNewUser"`
 	Message   string `json:"message,omitempty"`
 }
@@ -143,7 +164,7 @@ func enableCORS(next http.HandlerFunc) http.HandlerFunc {
 }
 
 // --- Email Sending ---
-func sendEmail(toEmail, otp string) error {
+func sendEmail(toEmail, otp string, isAdmin bool) error {
 	smtpHost := "smtp.gmail.com"
 	smtpPort := "587"
 
@@ -158,20 +179,185 @@ func sendEmail(toEmail, otp string) error {
 
 	auth := smtp.PlainAuth("", senderEmail, senderPassword, smtpHost)
 
-	subject := "Your Taaza OTP Code"
-	body := fmt.Sprintf(`
-Hello,
+	var subject, body string
 
-Your OTP code for Taaza is: %s
-
-This code is valid for 5 minutes. Do not share it with anyone.
-
-Best regards,
-Team Taaza
+	if isAdmin {
+		subject = "ACTION REQUIRED: Taaza Admin Access"
+		body = fmt.Sprintf(`
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        .container {
+            font-family: 'Arial', sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            background-color: #f4f4f4;
+            padding: 20px;
+        }
+        .header {
+            background-color: #B22222; /* Red for Admin */
+            padding: 20px;
+            text-align: center;
+            border-top-left-radius: 8px;
+            border-top-right-radius: 8px;
+        }
+        .header h1 {
+            color: #FFFFFF;
+            margin: 0;
+            font-size: 28px;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+        }
+        .content {
+            background-color: #ffffff;
+            padding: 30px;
+            text-align: center;
+            border-bottom-left-radius: 8px;
+            border-bottom-right-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .otp-code {
+            font-size: 36px;
+            font-weight: bold;
+            color: #B22222;
+            letter-spacing: 5px;
+            margin: 20px 0;
+            padding: 10px;
+            background-color: #fff0f0;
+            border-radius: 4px;
+            display: inline-block;
+            border: 1px dashed #B22222;
+        }
+        .footer {
+            margin-top: 20px;
+            text-align: center;
+            color: #666;
+            font-size: 12px;
+        }
+        p {
+            color: #333;
+            line-height: 1.6;
+        }
+        .warning {
+            color: #B22222;
+            font-weight: bold;
+            font-size: 12px;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Admin Verification</h1>
+        </div>
+        <div class="content">
+            <p><strong>Security Alert:</strong> Admin access requested.</p>
+            <p>Use the code below to sign in to the Taaza Admin Console.</p>
+            <div class="otp-code">%s</div>
+            <p>Valid for 5 minutes.</p>
+            <div class="warning">If you did not request this, please contact support immediately.</div>
+        </div>
+        <div class="footer">
+            &copy; 2026 Taaza Systems. Secure Administrative Access.
+        </div>
+    </div>
+</body>
+</html>
 `, otp)
+	} else {
+		subject = "Your Taaza OTP Code"
+		body = fmt.Sprintf(`
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        .container {
+            font-family: 'Arial', sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            background-color: #f4f4f4;
+            padding: 20px;
+        }
+        .header {
+            background-color: #0C2D57;
+            padding: 20px;
+            text-align: center;
+            border-top-left-radius: 8px;
+            border-top-right-radius: 8px;
+        }
+        .header h1 {
+            color: #FFD700;
+            margin: 0;
+            font-size: 28px;
+            letter-spacing: 2px;
+        }
+        .content {
+            background-color: #ffffff;
+            padding: 30px;
+            text-align: center;
+            border-bottom-left-radius: 8px;
+            border-bottom-right-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .otp-code {
+            font-size: 36px;
+            font-weight: bold;
+            color: #0C2D57;
+            letter-spacing: 5px;
+            margin: 20px 0;
+            padding: 10px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+            display: inline-block;
+        }
+        .footer {
+            margin-top: 20px;
+            text-align: center;
+            color: #666;
+            font-size: 12px;
+        }
+        p {
+            color: #333;
+            line-height: 1.6;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>TAAZA</h1>
+        </div>
+        <div class="content">
+            <p>Hello,</p>
+            <p>You requested a login verification code for your Taaza account.</p>
+            <div class="otp-code">%s</div>
+            <p>This code is valid for 5 minutes.<br>Please do not share this code with anyone.</p>
+            <p style="margin-top: 30px; font-size: 14px; color: #666;">
+                Best regards,<br>
+                <strong>Team Taaza</strong>
+            </p>
+        </div>
+        <div class="footer">
+            &copy; 2026 Taaza. All rights reserved.<br>
+            Fresh from Farm to Door
+        </div>
+    </div>
+</body>
+</html>
+`, otp)
+	}
 
-	msg := []byte(fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\n\r\n%s",
-		senderEmail, toEmail, subject, body))
+	// MIME headers for HTML email
+	headers := "MIME-Version: 1.0\r\n" +
+		"Content-Type: text/html; charset=\"UTF-8\"\r\n" +
+		fmt.Sprintf("From: Taaza <%s>\r\n", senderEmail) +
+		fmt.Sprintf("To: %s\r\n", toEmail) +
+		fmt.Sprintf("Subject: %s\r\n", subject) +
+		"\r\n"
+
+	msg := []byte(headers + body)
 
 	err := smtp.SendMail(smtpHost+":"+smtpPort, auth, senderEmail, []string{toEmail}, msg)
 	if err != nil {
@@ -190,7 +376,18 @@ func sendOTPHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Security Check: Restrict OTP sending for admin
+	isAdmin := req.Type == "admin"
+	if isAdmin {
+		if req.Email != "amarnathm9945@gmail.com" {
+			log.Printf("Blocked unauthorized admin OTP request for: %s", req.Email)
+			http.Error(w, "Unauthorized access. Only designated admin can login.", http.StatusForbidden)
+			return
+		}
+	}
+
 	// Generate 6-digit OTP
+	log.Printf("Received SendOTP Request: %+v", req)
 	code := fmt.Sprintf("%06d", rand.Intn(1000000))
 	expires := time.Now().Add(OTPExpiration)
 
@@ -208,8 +405,8 @@ func sendOTPHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Send email with OTP
-	if err := sendEmail(req.Email, code); err != nil {
+	// Send email with OTP (Admin or User template)
+	if err := sendEmail(req.Email, code, isAdmin); err != nil {
 		// Log error but don't fail the request (OTP is still stored)
 		log.Println("Email send failed, but OTP stored:", err)
 	}
@@ -234,9 +431,10 @@ func verifyOTPHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if user exists
+	// Check if user exists and get role
 	var count int
-	err = db.QueryRow("SELECT COUNT(*) FROM users WHERE email = $1", req.Email).Scan(&count)
+	var role string
+	err = db.QueryRow("SELECT COUNT(*), COALESCE(MAX(role), 'user') FROM users WHERE email = $1", req.Email).Scan(&count, &role)
 	if err != nil {
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
@@ -251,6 +449,7 @@ func verifyOTPHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(VerifyOTPResponse{
 		Success:   true,
 		Token:     token,
+		Role:      role,
 		IsNewUser: isNewUser,
 	})
 }
@@ -358,7 +557,7 @@ func listUsersHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := db.Query(`
-		SELECT id, email, mobile, COALESCE(name, ''), COALESCE(dob::text, ''), COALESCE(gender, ''), COALESCE(status, 'Active'), created_at 
+		SELECT id, email, mobile, COALESCE(name, ''), COALESCE(dob::text, ''), COALESCE(gender, ''), COALESCE(role, 'user'), COALESCE(status, 'Active'), created_at 
 		FROM users 
 		ORDER BY created_at DESC
 	`)
@@ -372,7 +571,7 @@ func listUsersHandler(w http.ResponseWriter, r *http.Request) {
 	var users []User
 	for rows.Next() {
 		var u User
-		err := rows.Scan(&u.ID, &u.Email, &u.Mobile, &u.Name, &u.DOB, &u.Gender, &u.Status, &u.CreatedAt)
+		err := rows.Scan(&u.ID, &u.Email, &u.Mobile, &u.Name, &u.DOB, &u.Gender, &u.Role, &u.Status, &u.CreatedAt)
 		if err != nil {
 			log.Println("Error scanning user:", err)
 			continue

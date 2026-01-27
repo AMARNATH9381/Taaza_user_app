@@ -1,0 +1,5 @@
+{
+  "name": "Taaza Admin Application",
+  "description": "A comprehensive admin dashboard for managing grocery delivery, milk subscriptions, meat pre-booking, and user tracking with real-time analytics and inventory management.",
+  "requestFramePermissions": []
+}

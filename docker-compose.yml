@@ -1,17 +1,27 @@
-version: '3.8'
-
 services:
-  frontend:
-    build: .
+  user-app:
+    build: ./apps/user-app
+    container_name: taaza-user-app
     ports:
       - "3000:80"
     depends_on:
-      - backend
+      - auth-service
     networks:
       - taaza-network
 
-  backend:
+  admin-app:
+    build: ./apps/admin-app
+    container_name: taaza-admin-app
+    ports:
+      - "3001:80"
+    depends_on:
+      - auth-service
+    networks:
+      - taaza-network
+
+  auth-service:
     build: ./services/auth-service
+    container_name: taaza-auth-service
     environment:
       - PORT=8080
       - DATABASE_URL=postgres://taaza_user:taaza_pass@postgres:5432/taaza_db?sslmode=disable
@@ -26,6 +36,7 @@ services:
 
   postgres:
     image: postgres:15-alpine
+    container_name: taaza-postgres
     environment:
       - POSTGRES_USER=taaza_user
       - POSTGRES_PASSWORD=taaza_pass
