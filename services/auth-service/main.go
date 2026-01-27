@@ -55,6 +55,7 @@ func initSchema() {
 		name TEXT,
 		dob DATE,
 		gender TEXT,
+		status TEXT DEFAULT 'Active',
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
@@ -69,6 +70,10 @@ func initSchema() {
 	if err != nil {
 		log.Fatal("Failed to create schema:", err)
 	}
+	
+	// Add status column if it doesn't exist (for existing tables)
+	db.Exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'Active'")
+	
 	log.Println("Schema initialized")
 }
 
@@ -84,8 +89,9 @@ type User struct {
 	Email     string    `json:"email"`
 	Mobile    string    `json:"mobile"`
 	Name      string    `json:"name"`
-	DOB       string    `json:"dob,omitempty"` // YYYY-MM-DD
+	DOB       string    `json:"dob,omitempty"`
 	Gender    string    `json:"gender,omitempty"`
+	Status    string    `json:"status"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -338,6 +344,87 @@ func profileHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// --- Admin Handlers ---
+
+type UpdateStatusRequest struct {
+	ID     int    `json:"id"`
+	Status string `json:"status"`
+}
+
+func listUsersHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	rows, err := db.Query(`
+		SELECT id, email, mobile, COALESCE(name, ''), COALESCE(dob::text, ''), COALESCE(gender, ''), COALESCE(status, 'Active'), created_at 
+		FROM users 
+		ORDER BY created_at DESC
+	`)
+	if err != nil {
+		log.Println("Error fetching users:", err)
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var users []User
+	for rows.Next() {
+		var u User
+		err := rows.Scan(&u.ID, &u.Email, &u.Mobile, &u.Name, &u.DOB, &u.Gender, &u.Status, &u.CreatedAt)
+		if err != nil {
+			log.Println("Error scanning user:", err)
+			continue
+		}
+		users = append(users, u)
+	}
+
+	if users == nil {
+		users = []User{} // Return empty array instead of null
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(users)
+}
+
+func updateUserStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req UpdateStatusRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	// Validate status
+	if req.Status != "Active" && req.Status != "Blocked" {
+		http.Error(w, "Invalid status. Must be 'Active' or 'Blocked'", http.StatusBadRequest)
+		return
+	}
+
+	result, err := db.Exec("UPDATE users SET status = $1, updated_at = NOW() WHERE id = $2", req.Status, req.ID)
+	if err != nil {
+		log.Println("Error updating user status:", err)
+		http.Error(w, "Failed to update status", http.StatusInternalServerError)
+		return
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"status":  req.Status,
+	})
+}
+
 func main() {
 	log.Println("Starting Auth Service...")
 	
@@ -348,6 +435,8 @@ func main() {
 	http.HandleFunc("/verify-otp", enableCORS(verifyOTPHandler))
 	http.HandleFunc("/register", enableCORS(registerHandler))
 	http.HandleFunc("/profile", enableCORS(profileHandler))
+	http.HandleFunc("/admin/users", enableCORS(listUsersHandler))
+	http.HandleFunc("/admin/users/status", enableCORS(updateUserStatusHandler))
 
 	port := os.Getenv("PORT")
 	if port == "" {
