@@ -1,0 +1,21 @@
+# Node modules
+node_modules/
+
+# Build outputs (we want fresh builds)
+dist/
+build/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Note: We explicitly DO NOT ignore .env 
+# because Vite needs VITE_* env vars at build time

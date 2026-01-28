@@ -7,6 +7,8 @@ COPY package.json package-lock.json ./
 RUN npm install
 
 COPY . .
+
+# Ensure .env is available for Vite build (copies from context if exists)
 RUN npm run build
 
 # Production Stage

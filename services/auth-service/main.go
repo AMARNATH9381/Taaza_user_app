@@ -65,6 +65,21 @@ func initSchema() {
 		code TEXT NOT NULL,
 		expires_at TIMESTAMP NOT NULL
 	);
+
+	CREATE TABLE IF NOT EXISTS addresses (
+		id SERIAL PRIMARY KEY,
+		user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+		tag TEXT NOT NULL,
+		house_no TEXT NOT NULL,
+		landmark TEXT,
+		full_address TEXT NOT NULL,
+		latitude DECIMAL(10,8),
+		longitude DECIMAL(11,8),
+		receiver_name TEXT NOT NULL,
+		receiver_phone TEXT NOT NULL,
+		is_default BOOLEAN DEFAULT false,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
 	`
 	_, err := db.Exec(query)
 	if err != nil {
@@ -112,6 +127,21 @@ type User struct {
 	Role      string    `json:"role"`
 	Status    string    `json:"status"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+type Address struct {
+	ID            int     `json:"id"`
+	UserID        int     `json:"user_id"`
+	Tag           string  `json:"tag"`
+	HouseNo       string  `json:"house_no"`
+	Landmark      string  `json:"landmark"`
+	FullAddress   string  `json:"full_address"`
+	Latitude      float64 `json:"latitude"`
+	Longitude     float64 `json:"longitude"`
+	ReceiverName  string  `json:"receiver_name"`
+	ReceiverPhone string  `json:"receiver_phone"`
+	IsDefault     bool    `json:"is_default"`
+	CreatedAt     string  `json:"created_at"`
 }
 
 // --- Request/Response Types ---
@@ -559,6 +589,7 @@ func listUsersHandler(w http.ResponseWriter, r *http.Request) {
 	rows, err := db.Query(`
 		SELECT id, email, mobile, COALESCE(name, ''), COALESCE(dob::text, ''), COALESCE(gender, ''), COALESCE(role, 'user'), COALESCE(status, 'Active'), created_at 
 		FROM users 
+		WHERE role != 'admin' OR role IS NULL
 		ORDER BY created_at DESC
 	`)
 	if err != nil {
@@ -624,6 +655,219 @@ func updateUserStatusHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// --- Address Handlers ---
+
+func addressHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	switch r.Method {
+	case "GET":
+		// List addresses for a user
+		email := r.URL.Query().Get("email")
+		userIDParam := r.URL.Query().Get("user_id")
+
+		var userID int
+		var err error
+
+		if userIDParam != "" {
+			// Admin fetching by user_id
+			fmt.Sscanf(userIDParam, "%d", &userID)
+		} else if email != "" {
+			// Fetch user ID from email
+			err = db.QueryRow("SELECT id FROM users WHERE email = $1", email).Scan(&userID)
+			if err != nil {
+				http.Error(w, "User not found", http.StatusNotFound)
+				return
+			}
+		} else {
+			http.Error(w, "Email or user_id is required", http.StatusBadRequest)
+			return
+		}
+
+
+
+		rows, err := db.Query(`
+			SELECT id, user_id, tag, house_no, COALESCE(landmark, ''), full_address, 
+			       COALESCE(latitude, 0), COALESCE(longitude, 0), receiver_name, receiver_phone, 
+			       is_default, created_at::text
+			FROM addresses WHERE user_id = $1 ORDER BY is_default DESC, created_at DESC
+		`, userID)
+		if err != nil {
+			log.Println("Error fetching addresses:", err)
+			http.Error(w, "Failed to fetch addresses", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		var addresses []Address
+		for rows.Next() {
+			var addr Address
+			rows.Scan(&addr.ID, &addr.UserID, &addr.Tag, &addr.HouseNo, &addr.Landmark,
+				&addr.FullAddress, &addr.Latitude, &addr.Longitude, &addr.ReceiverName,
+				&addr.ReceiverPhone, &addr.IsDefault, &addr.CreatedAt)
+			addresses = append(addresses, addr)
+		}
+
+		if addresses == nil {
+			addresses = []Address{}
+		}
+		json.NewEncoder(w).Encode(addresses)
+
+	case "POST":
+		// Create new address
+		var req struct {
+			Email         string  `json:"email"`
+			Tag           string  `json:"tag"`
+			HouseNo       string  `json:"house_no"`
+			Landmark      string  `json:"landmark"`
+			FullAddress   string  `json:"full_address"`
+			Latitude      float64 `json:"latitude"`
+			Longitude     float64 `json:"longitude"`
+			ReceiverName  string  `json:"receiver_name"`
+			ReceiverPhone string  `json:"receiver_phone"`
+			IsDefault     bool    `json:"is_default"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+
+		// Get user ID from email
+		var userID int
+		err := db.QueryRow("SELECT id FROM users WHERE email = $1", req.Email).Scan(&userID)
+		if err != nil {
+			http.Error(w, "User not found", http.StatusNotFound)
+			return
+		}
+
+		// If setting as default, unset other defaults
+		if req.IsDefault {
+			db.Exec("UPDATE addresses SET is_default = false WHERE user_id = $1", userID)
+		}
+
+		var newID int
+		err = db.QueryRow(`
+			INSERT INTO addresses (user_id, tag, house_no, landmark, full_address, latitude, longitude, receiver_name, receiver_phone, is_default)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id
+		`, userID, req.Tag, req.HouseNo, req.Landmark, req.FullAddress, req.Latitude, req.Longitude, req.ReceiverName, req.ReceiverPhone, req.IsDefault).Scan(&newID)
+
+		if err != nil {
+			log.Println("Error creating address:", err)
+			http.Error(w, "Failed to create address", http.StatusInternalServerError)
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"id":      newID,
+		})
+
+	case "PUT":
+		// Update address
+		var req struct {
+			ID            int     `json:"id"`
+			Tag           string  `json:"tag"`
+			HouseNo       string  `json:"house_no"`
+			Landmark      string  `json:"landmark"`
+			FullAddress   string  `json:"full_address"`
+			Latitude      float64 `json:"latitude"`
+			Longitude     float64 `json:"longitude"`
+			ReceiverName  string  `json:"receiver_name"`
+			ReceiverPhone string  `json:"receiver_phone"`
+			IsDefault     bool    `json:"is_default"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+
+		// If setting as default, unset other defaults for this user
+		if req.IsDefault {
+			var userID int
+			db.QueryRow("SELECT user_id FROM addresses WHERE id = $1", req.ID).Scan(&userID)
+			db.Exec("UPDATE addresses SET is_default = false WHERE user_id = $1", userID)
+		}
+
+		_, err := db.Exec(`
+			UPDATE addresses SET tag=$1, house_no=$2, landmark=$3, full_address=$4, 
+			latitude=$5, longitude=$6, receiver_name=$7, receiver_phone=$8, is_default=$9
+			WHERE id=$10
+		`, req.Tag, req.HouseNo, req.Landmark, req.FullAddress, req.Latitude, req.Longitude, req.ReceiverName, req.ReceiverPhone, req.IsDefault, req.ID)
+
+		if err != nil {
+			log.Println("Error updating address:", err)
+			http.Error(w, "Failed to update address", http.StatusInternalServerError)
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+
+	case "DELETE":
+		// Delete address
+		id := r.URL.Query().Get("id")
+		if id == "" {
+			http.Error(w, "Address ID is required", http.StatusBadRequest)
+			return
+		}
+
+		_, err := db.Exec("DELETE FROM addresses WHERE id = $1", id)
+		if err != nil {
+			log.Println("Error deleting address:", err)
+			http.Error(w, "Failed to delete address", http.StatusInternalServerError)
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func adminUserAddressesHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID := r.URL.Query().Get("user_id")
+	if userID == "" {
+		http.Error(w, "user_id is required", http.StatusBadRequest)
+		return
+	}
+
+	rows, err := db.Query(`
+		SELECT id, user_id, tag, house_no, COALESCE(landmark, ''), full_address, 
+		       COALESCE(latitude, 0), COALESCE(longitude, 0), receiver_name, receiver_phone, 
+		       is_default, created_at::text
+		FROM addresses WHERE user_id = $1 ORDER BY is_default DESC, created_at DESC
+	`, userID)
+	if err != nil {
+		log.Println("Error fetching addresses:", err)
+		http.Error(w, "Failed to fetch addresses", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var addresses []Address
+	for rows.Next() {
+		var addr Address
+		rows.Scan(&addr.ID, &addr.UserID, &addr.Tag, &addr.HouseNo, &addr.Landmark,
+			&addr.FullAddress, &addr.Latitude, &addr.Longitude, &addr.ReceiverName,
+			&addr.ReceiverPhone, &addr.IsDefault, &addr.CreatedAt)
+		addresses = append(addresses, addr)
+	}
+
+	if addresses == nil {
+		addresses = []Address{}
+	}
+	json.NewEncoder(w).Encode(addresses)
+}
+
 func main() {
 	log.Println("Starting Auth Service...")
 	
@@ -634,8 +878,10 @@ func main() {
 	http.HandleFunc("/verify-otp", enableCORS(verifyOTPHandler))
 	http.HandleFunc("/register", enableCORS(registerHandler))
 	http.HandleFunc("/profile", enableCORS(profileHandler))
+	http.HandleFunc("/addresses", enableCORS(addressHandler))
 	http.HandleFunc("/admin/users", enableCORS(listUsersHandler))
 	http.HandleFunc("/admin/users/status", enableCORS(updateUserStatusHandler))
+	http.HandleFunc("/admin/users/addresses", enableCORS(adminUserAddressesHandler))
 
 	port := os.Getenv("PORT")
 	if port == "" {

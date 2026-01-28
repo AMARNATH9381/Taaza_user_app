@@ -5,6 +5,8 @@ interface UserInfo {
   name: string;
   email: string;
   role: string;
+  dob?: string;
+  gender?: string;
 }
 
 interface AuthContextType {
@@ -12,6 +14,7 @@ interface AuthContextType {
   user: UserInfo | null;
   sendOTP: (email: string) => Promise<void>;
   verifyOTP: (email: string, otp: string) => Promise<void>;
+  updateUser: (data: { name: string; dob: string; gender: string }) => Promise<void>;
   logout: () => void;
 }
 
@@ -62,6 +65,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setUser(userData);
   };
 
+  const updateUser = async (data: { name: string; dob: string; gender: string }) => {
+    if (!user) throw new Error('Not authenticated');
+
+    const response = await fetch(`/api/profile?email=${encodeURIComponent(user.email)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+
+    if (!response.ok) throw new Error('Failed to update profile');
+
+    const updatedUser = { ...user, ...data };
+    localStorage.setItem('taaza_user', JSON.stringify(updatedUser));
+    setUser(updatedUser);
+  };
+
   const logout = () => {
     localStorage.removeItem('taaza_token');
     localStorage.removeItem('taaza_user');
@@ -70,7 +89,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   return (
-    <AuthContext.Provider value={{ isAuthenticated, user, sendOTP, verifyOTP, logout }}>
+    <AuthContext.Provider value={{ isAuthenticated, user, sendOTP, verifyOTP, updateUser, logout }}>
       {children}
     </AuthContext.Provider>
   );

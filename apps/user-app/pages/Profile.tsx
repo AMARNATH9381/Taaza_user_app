@@ -290,7 +290,7 @@ const PersonalInfo: React.FC = () => {
 };
 
 const Addresses: React.FC = () => {
-    const [view, setView] = useState<'list' | 'map' | 'form'>('list');
+    const [view, setView] = useState<'list' | 'add'>('list');
     const [addresses, setAddresses] = useState<any[]>([]);
     const [editingId, setEditingId] = useState<string | null>(null);
     const [toastMsg, setToastMsg] = useState<string | null>(null);
@@ -310,7 +310,6 @@ const Addresses: React.FC = () => {
 
     const [isDefault, setIsDefault] = useState(false);
     const [isLocating, setIsLocating] = useState(false);
-    const [isConfirming, setIsConfirming] = useState(false);
 
     // Contact Details for Address
     const [receiverName, setReceiverName] = useState('');
@@ -319,503 +318,755 @@ const Addresses: React.FC = () => {
     // Validation State
     const [errors, setErrors] = useState<{ [key: string]: string }>({});
 
-    // Map Dragging State
-    const [pan, setPan] = useState({ x: 0, y: 0 });
-    const [isDragging, setIsDragging] = useState(false);
-    const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
-
     // Map Search State
     const [searchText, setSearchText] = useState('');
 
-    useEffect(() => {
-        const stored = localStorage.getItem('taaza_addresses');
+    // Google Maps State
+    const [coords, setCoords] = useState({ lat: 12.9716, lng: 77.5946 }); // Bangalore default
+    const mapRef = useRef<HTMLDivElement>(null);
+    const streetViewRef = useRef<HTMLDivElement>(null);
+    const searchInputRef = useRef<HTMLInputElement>(null);
+    const mapInstanceRef = useRef<any>(null);
+    const markerRef = useRef<any>(null);
+    const panoramaRef = useRef<any>(null);
+    const [isSaving, setIsSaving] = useState(false);
+
+    // Street View & Mobile Sheet State
+    const [showStreetView, setShowStreetView] = useState(false);
+    const [sheetExpanded, setSheetExpanded] = useState(true);
+
+    // Get user email from localStorage
+    // Get user email from localStorage
+    const getUserEmail = () => {
+        const stored = localStorage.getItem('taaza_user');
         if (stored) {
-            setAddresses(JSON.parse(stored));
+            const user = JSON.parse(stored);
+            return user.email;
+        }
+        return localStorage.getItem('taaza_user_email');
+    };
+
+    // Fetch addresses from backend API
+    useEffect(() => {
+        const email = getUserEmail();
+        if (email) {
+            fetch(`/api/addresses?email=${encodeURIComponent(email)}`)
+                .then(res => res.json())
+                .then(data => {
+                    if (Array.isArray(data)) {
+                        const mappedAddresses = data.map((addr: any) => ({
+                            id: addr.id.toString(),
+                            tag: addr.tag,
+                            houseNo: addr.house_no,
+                            landmark: addr.landmark || '',
+                            address: addr.full_address,
+                            isDefault: addr.is_default,
+                            receiverName: addr.receiver_name,
+                            receiverPhone: addr.receiver_phone,
+                            latitude: addr.latitude,
+                            longitude: addr.longitude
+                        }));
+                        setAddresses(mappedAddresses);
+                    }
+                })
+                .catch(err => {
+                    console.error('Error fetching addresses:', err);
+                    const stored = localStorage.getItem('taaza_addresses');
+                    if (stored) setAddresses(JSON.parse(stored));
+                });
         } else {
-            setAddresses([]);
+            const stored = localStorage.getItem('taaza_addresses');
+            if (stored) {
+                setAddresses(JSON.parse(stored));
+            }
         }
     }, []);
 
-    const saveAddressesToStorage = (newAddresses: any[]) => {
-        setAddresses(newAddresses);
-        localStorage.setItem('taaza_addresses', JSON.stringify(newAddresses));
+    // Load Google Maps script
+    useEffect(() => {
+        if (view === 'add' && !(window as any).google?.maps) {
+            const script = document.createElement('script');
+            script.src = `https://maps.googleapis.com/maps/api/js?key=${(import.meta as any).env.VITE_GOOGLE_MAPS_API_KEY}&libraries=places`;
+            script.async = true;
+            script.onload = () => initMap();
+            document.head.appendChild(script);
+        } else if (view === 'add' && (window as any).google?.maps) {
+            initMap();
+        }
+    }, [view]);
+
+    // Autocomplete for Search
+    useEffect(() => {
+        if (view === 'add' && searchInputRef.current && (window as any).google?.maps) {
+            console.log('Initializing Google Places Autocomplete');
+            const autocomplete = new (window as any).google.maps.places.Autocomplete(searchInputRef.current, {
+                fields: ['geometry', 'formatted_address'],
+            });
+
+            autocomplete.addListener('place_changed', () => {
+                const place = autocomplete.getPlace();
+                console.log('Place selected:', place);
+                if (!place.geometry || !place.geometry.location) return;
+
+                const lat = place.geometry.location.lat();
+                const lng = place.geometry.location.lng();
+                const newCoords = { lat, lng };
+
+                setCoords(newCoords);
+                setMapAddress(place.formatted_address || '');
+                setSearchText(place.formatted_address || '');
+
+                if (mapInstanceRef.current && markerRef.current) {
+                    const googleMaps = (window as any).google?.maps;
+                    const latLng = new googleMaps.LatLng(lat, lng);
+                    (mapInstanceRef.current as any).setCenter(latLng);
+                    (mapInstanceRef.current as any).setZoom(17);
+                    (markerRef.current as any).setPosition(latLng);
+                    (markerRef.current as any).setAnimation(googleMaps.Animation.BOUNCE);
+                    setTimeout(() => (markerRef.current as any).setAnimation(null), 1500);
+                }
+            });
+        }
+    }, [view]);
+
+    // Initialize Street View
+    const initStreetView = () => {
+        if (!streetViewRef.current || !(window as any).google?.maps) return;
+
+        panoramaRef.current = new (window as any).google.maps.StreetViewPanorama(streetViewRef.current, {
+            position: coords,
+            pov: { heading: 165, pitch: 0 },
+            zoom: 1,
+            addressControl: false,
+            fullscreenControl: false
+        });
     };
 
+    // Toggle Street View
+    const toggleStreetView = () => {
+        setShowStreetView(!showStreetView);
+        if (!showStreetView) {
+            setTimeout(() => initStreetView(), 100);
+        }
+    };
+
+    // Update Street View position when coords change
+    useEffect(() => {
+        if (showStreetView && panoramaRef.current) {
+            panoramaRef.current.setPosition(coords);
+        }
+    }, [coords, showStreetView]);
+
+    // Initialize Google Map
+    const initMap = () => {
+        if (!mapRef.current || !(window as any).google?.maps) return;
+        const googleMaps = (window as any).google.maps;
+
+        const map = new googleMaps.Map(mapRef.current, {
+            center: coords,
+            zoom: 17,
+            disableDefaultUI: true,
+            zoomControl: true,
+            styles: [
+                { featureType: 'poi', stylers: [{ visibility: 'off' }] },
+                { featureType: 'transit', elementType: 'labels', stylers: [{ visibility: 'simplified' }] }
+            ]
+        });
+
+        const marker = new googleMaps.Marker({
+            position: coords,
+            map,
+            draggable: true,
+            animation: googleMaps.Animation.DROP,
+            icon: {
+                path: "M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z",
+                fillColor: "#EA4335",
+                fillOpacity: 1,
+                strokeWeight: 1,
+                strokeColor: "#FFFFFF",
+                scale: 2,
+                anchor: new googleMaps.Point(12, 24),
+            }
+        });
+
+        marker.addListener('dragend', () => {
+            const pos = marker.getPosition();
+            if (pos) {
+                const newCoords = { lat: pos.lat(), lng: pos.lng() };
+                setCoords(newCoords);
+                reverseGeocode(newCoords);
+                marker.setAnimation(googleMaps.Animation.BOUNCE);
+                setTimeout(() => marker.setAnimation(null), 500);
+            }
+        });
+
+        // Click on map to place marker
+        map.addListener('click', (e: any) => {
+            if (e.latLng) {
+                const newCoords = { lat: e.latLng.lat(), lng: e.latLng.lng() };
+                setCoords(newCoords);
+                marker.setPosition(e.latLng);
+                reverseGeocode(newCoords);
+                marker.setAnimation(googleMaps.Animation.BOUNCE);
+                setTimeout(() => marker.setAnimation(null), 500);
+            }
+        });
+
+        mapInstanceRef.current = map;
+        markerRef.current = marker;
+    };
+
+    // Reverse Geocode
+    const reverseGeocode = (position: { lat: number; lng: number }) => {
+        if (!(window as any).google?.maps) return;
+        const googleMaps = (window as any).google.maps;
+
+        const geocoder = new googleMaps.Geocoder();
+        geocoder.geocode({ location: position }, (results: any, status: any) => {
+            if (status === 'OK' && results && results[0]) {
+                setMapAddress(results[0].formatted_address);
+            }
+        });
+    };
+
+    // Save addresses to localStorage
+    const saveAddressesToStorage = (addrs: any[]) => {
+        localStorage.setItem('taaza_addresses', JSON.stringify(addrs));
+    };
+
+    // Handle Add New Address
     const handleAddNew = () => {
         setEditingId(null);
         setHouseNo('');
         setLandmark('');
-
         setTagCategory('Home');
         setCustomTag('');
-
         setIsDefault(addresses.length === 0);
-        setMapAddress('12th Main Road, Indiranagar, Bengaluru');
-
-        // Auto-fill user details from profile/local storage
+        setMapAddress('Move the map to select location');
         setReceiverName(localStorage.getItem('taaza_user_name') || '');
         setReceiverPhone(localStorage.getItem('taaza_mobile') || '');
-
-        setPan({ x: 0, y: 0 });
         setSearchText('');
         setErrors({});
-        setView('map');
+        setShowStreetView(false);
+        setView('add');
     };
 
+    // Handle Edit Address
     const handleEdit = (addr: any) => {
         setEditingId(addr.id);
         setHouseNo(addr.houseNo);
-        setLandmark(addr.landmark);
-
-        // Determine tag category
-        if (addr.tag === 'Home' || addr.tag === 'Work') {
-            setTagCategory(addr.tag);
+        setLandmark(addr.landmark || '');
+        const tag = addr.tag;
+        if (tag === 'Home' || tag === 'Work') {
+            setTagCategory(tag);
             setCustomTag('');
         } else {
             setTagCategory('Other');
-            setCustomTag(addr.tag);
+            setCustomTag(tag);
         }
-
-        setIsDefault(addr.isDefault || false);
+        setIsDefault(addr.isDefault);
         setMapAddress(addr.address);
-        setReceiverName(addr.receiverName || localStorage.getItem('taaza_user_name') || '');
-        setReceiverPhone(addr.receiverPhone || localStorage.getItem('taaza_mobile') || '');
-        setErrors({});
-        setView('form');
+        setReceiverName(addr.receiverName || '');
+        setReceiverPhone(addr.receiverPhone || '');
+        if (addr.latitude && addr.longitude) {
+            setCoords({ lat: addr.latitude, lng: addr.longitude });
+        }
+        setShowStreetView(false);
+        setView('add');
     };
 
+    // Handle Delete Click
     const handleDeleteClick = (id: string) => {
         setDeleteId(id);
         setShowDeleteModal(true);
     };
 
+    // Confirm Delete
     const confirmDelete = () => {
-        if (deleteId) {
-            const filtered = addresses.filter(a => a.id !== deleteId);
-            const wasDefault = addresses.find(a => a.id === deleteId)?.isDefault;
-            if (wasDefault && filtered.length > 0) {
-                filtered[0].isDefault = true;
-            }
-            saveAddressesToStorage(filtered);
-            setShowDeleteModal(false);
-            setDeleteId(null);
-            setToastMsg("Address deleted");
-        }
+        if (!deleteId) return;
+        const email = getUserEmail();
+
+        fetch(`/api/addresses?id=${deleteId}&email=${encodeURIComponent(email || '')}`, {
+            method: 'DELETE'
+        })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    const newAddresses = addresses.filter(a => a.id !== deleteId);
+                    setAddresses(newAddresses);
+                    setToastMsg('Address deleted');
+                }
+            })
+            .catch(err => {
+                console.error('Error deleting address:', err);
+                const newAddresses = addresses.filter(a => a.id !== deleteId);
+                setAddresses(newAddresses);
+                saveAddressesToStorage(newAddresses);
+                setToastMsg('Address deleted');
+            });
+
+        setShowDeleteModal(false);
+        setDeleteId(null);
     };
 
+    // Handle Locate Me with pulsing animation
     const handleLocateMe = () => {
         setIsLocating(true);
-        setTimeout(() => {
+
+        if (!navigator.geolocation) {
+            setToastMsg('Geolocation is not supported by your browser');
             setIsLocating(false);
-            setMapAddress('Current Location: 5th Block, Koramangala, Bengaluru');
-            setPan({ x: 0, y: 0 });
-        }, 1500);
+            return;
+        }
+
+        navigator.geolocation.getCurrentPosition(
+            (position) => {
+                const newCoords = {
+                    lat: position.coords.latitude,
+                    lng: position.coords.longitude
+                };
+                setCoords(newCoords);
+                const googleMaps = (window as any).google?.maps;
+
+                if (mapInstanceRef.current && markerRef.current && googleMaps) {
+                    const latLng = new googleMaps.LatLng(newCoords.lat, newCoords.lng);
+                    (mapInstanceRef.current as any).setCenter(latLng);
+                    (mapInstanceRef.current as any).setZoom(18);
+                    (markerRef.current as any).setPosition(latLng);
+                    (markerRef.current as any).setAnimation(googleMaps.Animation.BOUNCE);
+                    setTimeout(() => (markerRef.current as any)?.setAnimation(null), 1500);
+                }
+
+                reverseGeocode(newCoords);
+                setIsLocating(false);
+            },
+            (error) => {
+                console.error('Geolocation error:', error);
+                setToastMsg('Unable to get your location');
+                setIsLocating(false);
+            },
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+        );
     };
 
-    const handleConfirmLocation = () => {
-        setIsConfirming(true);
-        // Simulate API call to fetch address details
-        setTimeout(() => {
-            setIsConfirming(false);
-            setView('form');
-        }, 1000);
-    };
-
+    // Validate Form
     const validateForm = () => {
-        const newErrors: any = {};
-        if (!receiverName.trim()) newErrors.receiverName = "Name is required";
-        if (!receiverPhone.trim()) newErrors.receiverPhone = "Phone is required";
-        else if (!/^\d{10}$/.test(receiverPhone.replace(/\D/g, ''))) newErrors.receiverPhone = "Enter valid 10-digit number";
-        if (!houseNo.trim()) newErrors.houseNo = "House/Flat No. is required";
+        const newErrors: { [key: string]: string } = {};
 
-        // Custom Tag Validation
+        if (!houseNo.trim()) newErrors.houseNo = 'House/Flat number is required';
+        if (!receiverName.trim()) newErrors.receiverName = 'Receiver name is required';
+        if (!receiverPhone.trim()) {
+            newErrors.receiverPhone = 'Phone number is required';
+        } else if (!/^\d{10}$/.test(receiverPhone.trim())) {
+            newErrors.receiverPhone = 'Enter a valid 10-digit phone number';
+        }
         if (tagCategory === 'Other' && !customTag.trim()) {
-            newErrors.customTag = "Please give this address a name";
+            newErrors.customTag = 'Please enter a custom tag';
         }
 
         setErrors(newErrors);
         return Object.keys(newErrors).length === 0;
     };
 
+    // Save Address
     const handleSaveAddress = () => {
-        if (!validateForm()) {
-            return;
-        }
+        if (!validateForm()) return;
 
         const finalTag = tagCategory === 'Other' ? customTag.trim() : tagCategory;
+        const email = getUserEmail();
 
-        const newAddr = {
-            id: editingId || Date.now().toString(),
+        setIsSaving(true);
+
+        const payload = {
+            email,
+            id: editingId ? parseInt(editingId) : undefined,
             tag: finalTag,
-            houseNo,
+            house_no: houseNo,
             landmark,
-            address: mapAddress,
-            isDefault,
-            receiverName,
-            receiverPhone
+            full_address: mapAddress,
+            latitude: coords.lat,
+            longitude: coords.lng,
+            receiver_name: receiverName,
+            receiver_phone: receiverPhone,
+            is_default: isDefault
         };
 
-        let updatedAddresses = [...addresses];
+        const url = '/api/addresses';
+        const method = editingId ? 'PUT' : 'POST';
 
-        if (isDefault) {
-            updatedAddresses = updatedAddresses.map(a => ({ ...a, isDefault: false }));
-        }
+        fetch(url, {
+            method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success || data.id) {
+                    return fetch(`${url}?email=${encodeURIComponent(email || '')}`)
+                        .then(res => res.json())
+                        .then(fetchedAddresses => {
+                            if (Array.isArray(fetchedAddresses)) {
+                                const mappedAddresses = fetchedAddresses.map((addr: any) => ({
+                                    id: addr.id.toString(),
+                                    tag: addr.tag,
+                                    houseNo: addr.house_no,
+                                    landmark: addr.landmark || '',
+                                    address: addr.full_address,
+                                    isDefault: addr.is_default,
+                                    receiverName: addr.receiver_name,
+                                    receiverPhone: addr.receiver_phone,
+                                    latitude: addr.latitude,
+                                    longitude: addr.longitude
+                                }));
+                                setAddresses(mappedAddresses);
+                            }
+                        });
+                }
+            })
+            .then(() => {
+                setIsSaving(false);
+                setToastMsg(editingId ? "Address Updated" : "Address Added");
+                setView('list');
+            })
+            .catch(err => {
+                console.error('Error saving address:', err);
+                setIsSaving(false);
+                const newAddr = {
+                    id: editingId || Date.now().toString(),
+                    tag: finalTag,
+                    houseNo,
+                    landmark,
+                    address: mapAddress,
+                    isDefault,
+                    receiverName,
+                    receiverPhone,
+                    latitude: coords.lat,
+                    longitude: coords.lng
+                };
 
-        if (editingId) {
-            updatedAddresses = updatedAddresses.map(a => a.id === editingId ? newAddr : a);
-        } else {
-            updatedAddresses.push(newAddr);
-        }
+                let newAddresses;
+                if (editingId) {
+                    newAddresses = addresses.map(a => a.id === editingId ? newAddr : a);
+                } else {
+                    newAddresses = [...addresses, newAddr];
+                }
 
-        if (!updatedAddresses.some(a => a.isDefault) && updatedAddresses.length > 0) {
-            updatedAddresses[0].isDefault = true;
-        }
+                if (isDefault) {
+                    newAddresses = newAddresses.map(a => ({ ...a, isDefault: a.id === newAddr.id }));
+                }
 
-        saveAddressesToStorage(updatedAddresses);
-        setToastMsg(editingId ? "Address Updated" : "Address Added");
-        setView('list');
+                setAddresses(newAddresses);
+                saveAddressesToStorage(newAddresses);
+                setToastMsg(editingId ? "Address Updated" : "Address Added");
+                setView('list');
+            });
     };
 
-    // Map Interaction Handlers
-    const handlePointerDown = (e: React.MouseEvent | React.TouchEvent) => {
-        setIsDragging(true);
-        const clientX = 'touches' in e ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
-        const clientY = 'touches' in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
-        setDragStart({ x: clientX - pan.x, y: clientY - pan.y });
-    };
-
-    const handlePointerMove = (e: React.MouseEvent | React.TouchEvent) => {
-        if (!isDragging) return;
-        const clientX = 'touches' in e ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
-        const clientY = 'touches' in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
-        setPan({ x: clientX - dragStart.x, y: clientY - dragStart.y });
-    };
-
-    const handlePointerUp = () => {
-        setIsDragging(false);
-        // Simulate finding address near new center
-        if (Math.abs(pan.x) > 20 || Math.abs(pan.y) > 20) {
-            const streets = ['100ft Road', 'CMH Road', '12th Main', '80ft Road', 'Cambridge Layout', 'Double Road'];
-            const randomStreet = streets[Math.floor(Math.random() * streets.length)];
-            setMapAddress(`${Math.floor(Math.random() * 200)}, ${randomStreet}, Bengaluru`);
+    // CSS for pulsing animation
+    const pulseStyle = `
+        @keyframes pulse-ring {
+            0% { transform: scale(0.8); opacity: 1; }
+            100% { transform: scale(2); opacity: 0; }
         }
-    };
+        .pulse-ring::before {
+            content: '';
+            position: absolute;
+            inset: -8px;
+            border-radius: 50%;
+            border: 3px solid #3B82F6;
+            animation: pulse-ring 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        .pac-container {
+            z-index: 10500 !important;
+        }
+    `;
 
-    // --- Map View ---
-    if (view === 'map') {
+    // ADD VIEW - Split Layout
+    if (view === 'add') {
         return (
-            <div className="h-screen w-full bg-gray-100 flex flex-col relative overflow-hidden">
-                {/* Header with Search */}
-                <div className="absolute top-0 left-0 right-0 z-30 p-4 pt-4 bg-gradient-to-b from-black/50 to-transparent flex gap-3 pointer-events-none">
-                    <button
-                        onClick={() => setView('list')}
-                        className="pointer-events-auto w-10 h-10 bg-white rounded-full shadow-lg flex items-center justify-center text-gray-700 active:scale-95 transition-transform flex-shrink-0"
-                    >
-                        <span className="material-symbols-outlined">arrow_back</span>
-                    </button>
-                    <div className="pointer-events-auto flex-grow bg-white rounded-full shadow-lg h-10 flex items-center px-4 animate-slide-up relative">
-                        <span className="material-symbols-outlined text-gray-400">search</span>
-                        <input
-                            type="text"
-                            value={searchText}
-                            onChange={(e) => setSearchText(e.target.value)}
-                            placeholder="Search for area, street name..."
-                            className="ml-2 flex-grow bg-transparent outline-none text-sm text-gray-700 placeholder-gray-400"
+            <div className="min-h-screen bg-gray-50">
+                <style>{pulseStyle}</style>
+
+                {/* Header */}
+                <div className="bg-white shadow-sm sticky top-0 z-40">
+                    <div className="flex items-center gap-3 p-4">
+                        <button
+                            onClick={() => setView('list')}
+                            className="w-10 h-10 bg-gray-100 rounded-full flex items-center justify-center text-gray-700 hover:bg-gray-200 transition-colors"
+                        >
+                            <span className="material-symbols-outlined">arrow_back</span>
+                        </button>
+                        <h1 className="text-lg font-bold text-gray-800">
+                            {editingId ? 'Edit Address' : 'Add New Address'}
+                        </h1>
+                    </div>
+                </div>
+
+                {/* Main Content - Split Layout */}
+                <div className="md:grid md:grid-cols-2 md:h-[calc(100vh-64px)]">
+
+                    {/* Map Section */}
+                    <div className="relative h-[45vh] md:h-full">
+                        {/* Map Container */}
+                        <div
+                            ref={mapRef}
+                            className={`absolute inset-0 ${showStreetView ? 'hidden' : 'block'}`}
                         />
-                        {searchText && (
-                            <button
-                                onClick={() => setSearchText('')}
-                                className="absolute right-3 text-gray-400 hover:text-gray-600"
-                            >
-                                <span className="material-symbols-outlined text-lg">close</span>
-                            </button>
-                        )}
-                    </div>
-                </div>
 
-                {/* Enhanced Map Visualization with Pan Support */}
-                <div
-                    className="absolute inset-0 z-0 bg-[#e5e7eb] w-full h-full cursor-grab active:cursor-grabbing touch-none"
-                    onMouseDown={handlePointerDown}
-                    onMouseMove={handlePointerMove}
-                    onMouseUp={handlePointerUp}
-                    onMouseLeave={handlePointerUp}
-                    onTouchStart={handlePointerDown}
-                    onTouchMove={handlePointerMove}
-                    onTouchEnd={handlePointerUp}
-                >
-                    {/* Panning Container */}
-                    <div
-                        className="w-full h-full relative will-change-transform"
-                        style={{ transform: `translate(${pan.x}px, ${pan.y}px)` }}
-                    >
-                        {/* Map Grid / Roads */}
-                        <div className="absolute inset-[-100%]" style={{
-                            width: '300%',
-                            height: '300%',
-                            backgroundImage: `
-                                linear-gradient(#d1d5db 1px, transparent 1px),
-                                linear-gradient(90deg, #d1d5db 1px, transparent 1px)
-                            `,
-                            backgroundSize: '50px 50px',
-                            backgroundColor: '#f3f4f6'
-                        }}></div>
+                        {/* Street View Container */}
+                        <div
+                            ref={streetViewRef}
+                            className={`absolute inset-0 ${showStreetView ? 'block' : 'hidden'}`}
+                        />
 
-                        {/* Simulated Map Features */}
-                        <div className="absolute top-[30%] left-[30%] w-48 h-32 bg-[#d1fae5] rounded-xl border border-white/50 opacity-60"></div>
-                        <div className="absolute top-[40%] left-[60%] w-64 h-24 bg-[#e5e7eb] transform -skew-y-3 border-y-8 border-white"></div>
-                        <div className="absolute top-[60%] left-[20%] w-24 h-24 bg-white rounded-md shadow-sm border border-gray-200"></div>
-
-                        {/* Road Labels */}
-                        <div className="absolute top-[45%] left-[45%] bg-white/90 px-2 py-0.5 text-[10px] font-bold text-gray-500 rounded-sm transform -rotate-12 shadow-sm pointer-events-none">
-                            12th Main Rd
-                        </div>
-                    </div>
-                </div>
-
-                {/* Central Pin (Static relative to screen) */}
-                <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-10 flex flex-col items-center pointer-events-none">
-                    <div className="relative">
-                        <span className={`material-symbols-outlined text-5xl text-zepto-order-red drop-shadow-2xl transition-transform ${isDragging ? '-translate-y-4' : 'animate-bounce'}`}>location_on</span>
-                        <div className="w-4 h-2 bg-black/30 rounded-full mx-auto blur-[2px] mt-[-5px]"></div>
-                    </div>
-                    {!isDragging && (
-                        <div className="bg-black/80 text-white text-xs px-3 py-1.5 rounded-full mt-2 backdrop-blur-md shadow-lg font-medium whitespace-nowrap animate-fade-in flex items-center gap-1">
-                            <span className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse"></span>
-                            Move map to adjust
-                        </div>
-                    )}
-                </div>
-
-                {/* Locate Me Button */}
-                <button
-                    onClick={handleLocateMe}
-                    className="absolute bottom-48 right-4 z-20 bg-white p-3.5 rounded-full shadow-xl text-zepto-blue hover:bg-gray-50 active:scale-95 transition-all border border-gray-100 group"
-                >
-                    {isLocating ? (
-                        <span className="material-symbols-outlined animate-spin">refresh</span>
-                    ) : (
-                        <span className="material-symbols-outlined group-active:scale-90 transition-transform">my_location</span>
-                    )}
-                </button>
-
-                {/* Bottom Sheet */}
-                <div className="absolute bottom-0 left-0 right-0 bg-white z-20 rounded-t-3xl shadow-[0_-5px_30px_rgba(0,0,0,0.15)] p-6 animate-slide-up">
-                    <div className="w-12 h-1.5 bg-gray-200 rounded-full mx-auto mb-6"></div>
-                    <h3 className="font-bold text-gray-800 text-lg mb-2">Select Delivery Location</h3>
-                    <div className="flex items-start gap-3 mb-6 bg-gray-50 p-4 rounded-xl border border-gray-100">
-                        <div className="w-8 h-8 rounded-full bg-red-50 flex items-center justify-center flex-shrink-0 text-red-500">
-                            <span className="material-symbols-outlined text-lg">location_on</span>
-                        </div>
-                        <div>
-                            <p className="text-sm text-gray-800 font-bold leading-snug">{mapAddress}</p>
-                            <p className="text-xs text-gray-400 mt-1 font-medium">Bengaluru, Karnataka</p>
-                        </div>
-                    </div>
-                    <button
-                        onClick={handleConfirmLocation}
-                        disabled={isConfirming}
-                        className="w-full bg-zepto-yellow text-zepto-blue font-bold py-4 rounded-xl shadow-lg hover:brightness-105 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
-                    >
-                        {isConfirming ? (
-                            <>
-                                <span className="w-5 h-5 border-2 border-zepto-blue border-t-transparent rounded-full animate-spin"></span>
-                                Fetching address details...
-                            </>
-                        ) : (
-                            "Confirm Location"
-                        )}
-                    </button>
-                </div>
-            </div>
-        );
-    }
-
-    // --- Address Form View ---
-    if (view === 'form') {
-        return (
-            <div className="min-h-screen bg-gray-50 flex flex-col">
-                <Header title={editingId ? "Edit Address" : "Add Address"} showBack={true} onBack={() => setView('map')} />
-
-                <div className="flex-grow p-4 space-y-6">
-                    {/* Map Preview Snippet */}
-                    <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 rounded-lg bg-blue-50 flex items-center justify-center text-zepto-blue">
-                                <span className="material-symbols-outlined">map</span>
-                            </div>
-                            <div className="overflow-hidden">
-                                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Selected Location</p>
-                                <p className="text-sm text-gray-800 font-medium truncate max-w-[200px]">{mapAddress}</p>
-                            </div>
-                        </div>
-                        <button onClick={() => setView('map')} className="text-xs font-bold text-zepto-blue hover:underline bg-blue-50 px-3 py-1.5 rounded-lg">CHANGE</button>
-                    </div>
-
-                    <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 space-y-5 animate-slide-up">
-
-                        {/* Receiver Details */}
-                        <div className="grid grid-cols-2 gap-4">
-                            <div>
-                                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-1.5">Receiver's Name *</label>
+                        {/* Search Bar Overlay */}
+                        <div className="absolute top-4 left-4 right-4 z-10">
+                            <div className="relative">
+                                <span className="absolute left-3 top-1/2 -translate-y-1/2 material-symbols-outlined text-gray-400">search</span>
                                 <input
+                                    ref={searchInputRef}
                                     type="text"
-                                    value={receiverName}
-                                    onChange={(e) => {
-                                        setReceiverName(e.target.value);
-                                        if (errors.receiverName) setErrors({ ...errors, receiverName: '' });
-                                    }}
-                                    className={`w-full p-3.5 bg-gray-50 border rounded-xl font-semibold text-gray-800 focus:outline-none focus:bg-white transition-all text-sm ${errors.receiverName ? 'border-red-500 focus:border-red-500 bg-red-50' : 'border-gray-200 focus:border-zepto-blue'}`}
-                                    placeholder="Name"
+                                    value={searchText}
+                                    onChange={(e) => setSearchText(e.target.value)}
+                                    placeholder="Search for area, street name..."
+                                    className="w-full pl-10 pr-4 py-3 bg-white rounded-xl shadow-lg text-sm border-0 focus:ring-2 focus:ring-zepto-blue"
                                 />
-                                {errors.receiverName && <p className="text-[10px] text-red-500 mt-1 font-medium">{errors.receiverName}</p>}
-                            </div>
-                            <div>
-                                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-1.5">Phone Number *</label>
-                                <input
-                                    type="tel"
-                                    value={receiverPhone}
-                                    maxLength={10}
-                                    onChange={(e) => {
-                                        setReceiverPhone(e.target.value.replace(/\D/g, ''));
-                                        if (errors.receiverPhone) setErrors({ ...errors, receiverPhone: '' });
-                                    }}
-                                    className={`w-full p-3.5 bg-gray-50 border rounded-xl font-semibold text-gray-800 focus:outline-none focus:bg-white transition-all text-sm ${errors.receiverPhone ? 'border-red-500 focus:border-red-500 bg-red-50' : 'border-gray-200 focus:border-zepto-blue'}`}
-                                    placeholder="Mobile"
-                                />
-                                {errors.receiverPhone && <p className="text-[10px] text-red-500 mt-1 font-medium">{errors.receiverPhone}</p>}
                             </div>
                         </div>
 
-                        <div>
-                            <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-1.5">House / Flat / Block No. *</label>
-                            <input
-                                type="text"
-                                value={houseNo}
-                                onChange={(e) => {
-                                    setHouseNo(e.target.value);
-                                    if (errors.houseNo) setErrors({ ...errors, houseNo: '' });
-                                }}
-                                className={`w-full p-3.5 bg-gray-50 border rounded-xl font-semibold text-gray-800 focus:outline-none focus:bg-white transition-all text-sm ${errors.houseNo ? 'border-red-500 focus:border-red-500 bg-red-50' : 'border-gray-200 focus:border-zepto-blue'}`}
-                                placeholder="Ex: Flat 402, Sunshine Apts"
-                                autoFocus
-                            />
-                            {errors.houseNo && <p className="text-[10px] text-red-500 mt-1 font-medium">{errors.houseNo}</p>}
-                        </div>
-                        <div>
-                            <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-1.5">Landmark (Optional)</label>
-                            <input
-                                type="text"
-                                value={landmark}
-                                onChange={(e) => setLandmark(e.target.value)}
-                                className="w-full p-3.5 bg-gray-50 border border-gray-200 rounded-xl font-semibold text-gray-800 focus:outline-none focus:border-zepto-blue focus:bg-white transition-all text-sm"
-                                placeholder="Ex: Near Metro Station"
-                            />
+                        {/* Map Controls */}
+                        <div className="absolute bottom-4 right-4 z-10 flex flex-col gap-2">
+                            {/* Street View Toggle */}
+                            <button
+                                onClick={toggleStreetView}
+                                className={`p-3 rounded-full shadow-lg transition-all ${showStreetView
+                                    ? 'bg-zepto-blue text-white'
+                                    : 'bg-white text-gray-700 hover:bg-gray-50'
+                                    }`}
+                                title="Toggle Street View"
+                            >
+                                <span className="material-symbols-outlined">streetview</span>
+                            </button>
+
+                            {/* Locate Me Button */}
+                            <button
+                                onClick={handleLocateMe}
+                                disabled={isLocating}
+                                className={`relative p-3 rounded-full shadow-lg transition-all ${isLocating
+                                    ? 'bg-blue-500 text-white pulse-ring'
+                                    : 'bg-white text-zepto-blue hover:bg-gray-50'
+                                    }`}
+                            >
+                                {isLocating ? (
+                                    <span className="material-symbols-outlined animate-spin">sync</span>
+                                ) : (
+                                    <span className="material-symbols-outlined">my_location</span>
+                                )}
+                            </button>
                         </div>
 
-                        <div>
-                            <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-3">Save As *</label>
-                            <div className="flex gap-3 mb-3">
-                                {['Home', 'Work', 'Other'].map(t => (
-                                    <button
-                                        key={t}
-                                        onClick={() => {
-                                            setTagCategory(t as any);
-                                            if (t !== 'Other') setCustomTag('');
-                                            if (errors.customTag) setErrors({ ...errors, customTag: '' });
-                                        }}
-                                        className={`flex-1 py-3 rounded-xl border font-bold text-sm flex items-center justify-center gap-2 transition-all ${tagCategory === t ? 'bg-zepto-blue text-white border-zepto-blue shadow-md' : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'}`}
-                                    >
-                                        <span className="material-symbols-outlined text-lg">
-                                            {t === 'Home' ? 'home' : t === 'Work' ? 'work' : 'location_on'}
-                                        </span>
-                                        {t}
-                                    </button>
-                                ))}
+                        {/* Address Preview Card - Desktop */}
+                        <div className="hidden md:block absolute bottom-4 left-4 right-20 z-10">
+                            <div className="bg-white rounded-xl shadow-lg p-4">
+                                <div className="flex items-start gap-3">
+                                    <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center flex-shrink-0">
+                                        <span className="material-symbols-outlined text-red-500">location_on</span>
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                        <p className="text-sm font-medium text-gray-800 line-clamp-2">{mapAddress}</p>
+                                        <p className="text-xs text-gray-500 mt-1">Drag marker or tap to change</p>
+                                    </div>
+                                </div>
                             </div>
+                        </div>
+                    </div>
 
-                            {tagCategory === 'Other' && (
-                                <div className="animate-slide-up">
-                                    <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1.5">Address Label (Required)</label>
+                    {/* Form Section */}
+                    <div className="bg-white md:overflow-y-auto md:h-full">
+                        {/* Mobile: Draggable handle */}
+                        <div
+                            className="md:hidden flex justify-center py-2 cursor-pointer"
+                            onClick={() => setSheetExpanded(!sheetExpanded)}
+                        >
+                            <div className="w-10 h-1 bg-gray-300 rounded-full" />
+                        </div>
+
+                        {/* Address Preview - Mobile */}
+                        <div className="md:hidden px-4 pb-3 border-b">
+                            <div className="flex items-start gap-3">
+                                <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center flex-shrink-0">
+                                    <span className="material-symbols-outlined text-red-500">location_on</span>
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                    <p className="text-sm font-medium text-gray-800 line-clamp-2">{mapAddress}</p>
+                                    <p className="text-xs text-gray-500 mt-0.5">Drag marker to adjust</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Form Content */}
+                        <div className={`p-4 space-y-4 ${sheetExpanded ? '' : 'hidden md:block'}`}>
+                            {/* Receiver Details */}
+                            <div className="space-y-3">
+                                <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wide">Receiver Details</h3>
+
+                                <div>
                                     <input
                                         type="text"
-                                        value={customTag}
-                                        onChange={(e) => {
-                                            setCustomTag(e.target.value);
-                                            if (errors.customTag) setErrors({ ...errors, customTag: '' });
-                                        }}
-                                        className={`w-full p-3.5 bg-blue-50 border rounded-xl font-semibold text-gray-800 focus:outline-none focus:bg-white transition-all text-sm ${errors.customTag ? 'border-red-500 focus:border-red-500 bg-red-50' : 'border-zepto-blue focus:border-zepto-blue'}`}
-                                        placeholder="E.g. Friend's House, Dad's Office"
-                                        autoFocus
+                                        value={receiverName}
+                                        onChange={(e) => setReceiverName(e.target.value)}
+                                        placeholder="Receiver's Name"
+                                        className={`w-full px-4 py-3 bg-gray-50 rounded-xl text-sm border ${errors.receiverName ? 'border-red-300 bg-red-50' : 'border-gray-100'} focus:ring-2 focus:ring-zepto-blue focus:border-transparent`}
                                     />
-                                    {errors.customTag && <p className="text-[10px] text-red-500 mt-1 font-medium">{errors.customTag}</p>}
+                                    {errors.receiverName && <p className="text-xs text-red-500 mt-1">{errors.receiverName}</p>}
                                 </div>
-                            )}
-                        </div>
 
-                        {/* Default Address Toggle */}
-                        <div
-                            onClick={() => setIsDefault(!isDefault)}
-                            className={`flex items-center justify-between p-4 rounded-xl border cursor-pointer transition-all duration-300 mt-2 ${isDefault ? 'bg-green-50 border-green-200 shadow-sm ring-1 ring-green-100' : 'bg-gray-50 border-transparent hover:bg-gray-100'}`}
-                        >
-                            <div className="flex items-center gap-3">
-                                <div className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors ${isDefault ? 'bg-green-100 text-green-600' : 'bg-gray-200 text-gray-400'}`}>
-                                    <span className="material-symbols-outlined text-xl">{isDefault ? 'check_circle' : 'radio_button_unchecked'}</span>
-                                </div>
                                 <div>
-                                    <p className={`text-sm font-bold transition-colors ${isDefault ? 'text-green-800' : 'text-gray-700'}`}>Set as Default Address</p>
-                                    <p className={`text-xs transition-colors ${isDefault ? 'text-green-600' : 'text-gray-400'}`}>
-                                        {isDefault ? 'Primary delivery location' : 'Use for future orders'}
-                                    </p>
+                                    <input
+                                        type="tel"
+                                        value={receiverPhone}
+                                        onChange={(e) => setReceiverPhone(e.target.value)}
+                                        placeholder="Phone Number"
+                                        maxLength={10}
+                                        className={`w-full px-4 py-3 bg-gray-50 rounded-xl text-sm border ${errors.receiverPhone ? 'border-red-300 bg-red-50' : 'border-gray-100'} focus:ring-2 focus:ring-zepto-blue focus:border-transparent`}
+                                    />
+                                    {errors.receiverPhone && <p className="text-xs text-red-500 mt-1">{errors.receiverPhone}</p>}
                                 </div>
                             </div>
 
-                            {/* Toggle Switch */}
-                            <div className={`w-12 h-7 flex items-center rounded-full p-1 duration-300 cursor-pointer ${isDefault ? 'bg-green-500' : 'bg-gray-300'}`}>
-                                <div className={`bg-white w-5 h-5 rounded-full shadow-md transform duration-300 ease-in-out ${isDefault ? 'translate-x-5' : ''}`}></div>
-                            </div>
-                        </div>
+                            {/* Address Details */}
+                            <div className="space-y-3">
+                                <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wide">Address Details</h3>
 
+                                <div>
+                                    <input
+                                        type="text"
+                                        value={houseNo}
+                                        onChange={(e) => setHouseNo(e.target.value)}
+                                        placeholder="House / Flat / Block No."
+                                        className={`w-full px-4 py-3 bg-gray-50 rounded-xl text-sm border ${errors.houseNo ? 'border-red-300 bg-red-50' : 'border-gray-100'} focus:ring-2 focus:ring-zepto-blue focus:border-transparent`}
+                                    />
+                                    {errors.houseNo && <p className="text-xs text-red-500 mt-1">{errors.houseNo}</p>}
+                                </div>
+
+                                <input
+                                    type="text"
+                                    value={landmark}
+                                    onChange={(e) => setLandmark(e.target.value)}
+                                    placeholder="Landmark (Optional)"
+                                    className="w-full px-4 py-3 bg-gray-50 rounded-xl text-sm border border-gray-100 focus:ring-2 focus:ring-zepto-blue focus:border-transparent"
+                                />
+                            </div>
+
+                            {/* Save As Tags */}
+                            <div className="space-y-3">
+                                <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wide">Save As</h3>
+                                <div className="flex gap-2">
+                                    {(['Home', 'Work', 'Other'] as const).map((tag) => (
+                                        <button
+                                            key={tag}
+                                            onClick={() => setTagCategory(tag)}
+                                            className={`flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-medium transition-all ${tagCategory === tag
+                                                ? 'bg-zepto-blue text-white shadow-lg shadow-blue-200'
+                                                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                                                }`}
+                                        >
+                                            <span className="material-symbols-outlined text-sm">
+                                                {tag === 'Home' ? 'home' : tag === 'Work' ? 'domain' : 'location_on'}
+                                            </span>
+                                            {tag}
+                                        </button>
+                                    ))}
+                                </div>
+
+                                {tagCategory === 'Other' && (
+                                    <div>
+                                        <input
+                                            type="text"
+                                            value={customTag}
+                                            onChange={(e) => setCustomTag(e.target.value)}
+                                            placeholder="Enter tag name (e.g., Mom's Place)"
+                                            className={`w-full px-4 py-3 bg-gray-50 rounded-xl text-sm border ${errors.customTag ? 'border-red-300 bg-red-50' : 'border-gray-100'} focus:ring-2 focus:ring-zepto-blue focus:border-transparent`}
+                                        />
+                                        {errors.customTag && <p className="text-xs text-red-500 mt-1">{errors.customTag}</p>}
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Default Address Toggle */}
+                            <div className="flex items-center justify-between p-4 bg-gray-50 rounded-xl">
+                                <div>
+                                    <p className="font-medium text-gray-800 text-sm">Make this my default address</p>
+                                    <p className="text-xs text-gray-500 mt-0.5">This will be your primary delivery address</p>
+                                </div>
+                                <button
+                                    onClick={() => setIsDefault(!isDefault)}
+                                    className={`relative w-12 h-7 rounded-full transition-colors ${isDefault ? 'bg-zepto-blue' : 'bg-gray-300'}`}
+                                >
+                                    <div className={`absolute top-1 w-5 h-5 bg-white rounded-full shadow-md transition-transform ${isDefault ? 'left-6' : 'left-1'}`} />
+                                </button>
+                            </div>
+
+                            {/* Save Button */}
+                            <button
+                                onClick={handleSaveAddress}
+                                disabled={isSaving}
+                                className="w-full py-4 bg-zepto-blue text-white font-bold rounded-xl shadow-lg shadow-blue-200 hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                            >
+                                {isSaving ? (
+                                    <>
+                                        <span className="material-symbols-outlined animate-spin">sync</span>
+                                        Saving...
+                                    </>
+                                ) : (
+                                    <>
+                                        <span className="material-symbols-outlined">check</span>
+                                        {editingId ? 'Update Address' : 'Save Address'}
+                                    </>
+                                )}
+                            </button>
+                        </div>
                     </div>
                 </div>
 
-                <div className="p-4 bg-white border-t border-gray-100 sticky bottom-0">
-                    <button
-                        onClick={handleSaveAddress}
-                        className="w-full bg-zepto-yellow text-zepto-blue font-bold py-3.5 rounded-xl shadow-lg hover:brightness-105 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
-                    >
-                        Save Address
-                        <span className="material-symbols-outlined text-sm">check</span>
-                    </button>
-                </div>
+                {toastMsg && <Toast message={toastMsg} onClose={() => setToastMsg(null)} />}
             </div>
         );
     }
 
-    // --- List View (Default) ---
+    // LIST VIEW
     return (
-        <div className="min-h-screen bg-gray-50 relative">
+        <div className="min-h-screen bg-gray-50">
             <Header title="My Addresses" backPath="/profile" />
-            <div className="p-4 space-y-4">
 
-                {/* Add New Button */}
+            <div className="p-4">
+                {/* Add New Address Button */}
                 <button
                     onClick={handleAddNew}
-                    className="w-full py-4 bg-zepto-yellow text-zepto-blue font-bold rounded-2xl flex items-center justify-center gap-2 shadow-lg hover:brightness-105 transition-colors active:scale-[0.98]"
+                    className="w-full flex items-center gap-4 p-4 bg-gradient-to-r from-zepto-blue to-blue-600 text-white rounded-2xl shadow-lg shadow-blue-200 mb-6 hover:shadow-xl transition-all group"
                 >
-                    <span className="material-symbols-outlined">add_location_alt</span>
-                    Add New Address
+                    <div className="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform">
+                        <span className="material-symbols-outlined text-2xl">add_location_alt</span>
+                    </div>
+                    <div className="text-left">
+                        <span className="font-bold text-lg">Add New Address</span>
+                        <p className="text-sm text-white/80">Save your delivery locations</p>
+                    </div>
+                    <span className="material-symbols-outlined ml-auto">chevron_right</span>
                 </button>
 
-                {/* Address List */}
-                <div className="space-y-4 animate-slide-up">
+                {/* Saved Addresses */}
+                <div className="space-y-4">
                     {addresses.map((addr) => (
-                        <div key={addr.id} className={`bg-white p-5 rounded-2xl shadow-sm border relative group overflow-hidden transition-all ${addr.isDefault ? 'border-green-500 ring-1 ring-green-100' : 'border-gray-100'}`}>
-
-                            {/* Default Badge */}
+                        <div
+                            key={addr.id}
+                            className="bg-white rounded-2xl shadow-sm p-4 relative overflow-hidden border border-gray-50 hover:shadow-md transition-shadow"
+                        >
                             {addr.isDefault && (
-                                <div className="absolute top-0 left-0 bg-green-500 text-white text-[9px] font-bold px-2 py-0.5 rounded-br-lg z-10">
-                                    DEFAULT
+                                <div className="absolute -top-4 -left-4 w-20 h-20">
+                                    <div className="absolute top-8 -left-6 rotate-[-45deg] bg-green-500 text-white text-[9px] font-bold py-0.5 px-6 shadow-sm">
+                                        DEFAULT
+                                    </div>
                                 </div>
                             )}
 
