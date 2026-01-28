@@ -36,7 +36,7 @@ const Users: React.FC = () => {
   useEffect(() => {
     if (selectedUser) {
       setLoadingAddresses(true);
-      fetch(`http://localhost:8080/admin/users/addresses?user_id=${selectedUser.id}`)
+      fetch(`/api/admin/users/addresses?user_id=${selectedUser.id}`)
         .then(res => res.json())
         .then(data => {
           if (Array.isArray(data)) {
@@ -98,6 +98,23 @@ const Users: React.FC = () => {
       return dateStr;
     }
   };
+
+  const handleDeleteAddress = async (id: number) => {
+    if (!confirm('Are you sure you want to delete this address?')) return;
+    try {
+      const res = await fetch(`/api/addresses?id=${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) {
+        setUserAddresses(prev => prev.filter(a => a.id !== id));
+      } else {
+        alert('Failed to delete address');
+      }
+    } catch (err) {
+      console.error('Failed to delete address:', err);
+      alert('Error deleting address');
+    }
+  };
+
 
   const handleExport = () => {
     if (filteredUsers.length === 0) {
@@ -350,6 +367,13 @@ const Users: React.FC = () => {
                             <p className="text-[10px] text-slate-600 truncate">{addr.house_no}, {addr.full_address}</p>
                             <p className="text-[9px] text-slate-400 mt-1">{addr.receiver_name} • {addr.receiver_phone}</p>
                           </div>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleDeleteAddress(addr.id); }}
+                            className="p-1.5 hover:bg-rose-100 rounded-lg text-rose-400 hover:text-rose-600 transition-colors self-start"
+                            title="Delete Address"
+                          >
+                            <span className="material-symbols-outlined text-lg">delete</span>
+                          </button>
                         </div>
                       </div>
                     ))}
