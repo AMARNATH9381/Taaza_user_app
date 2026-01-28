@@ -16,6 +16,9 @@ const Users: React.FC = () => {
   const [userAddresses, setUserAddresses] = useState<any[]>([]);
   const [loadingAddresses, setLoadingAddresses] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null);
+  const [blockConfirm, setBlockConfirm] = useState<{ userId: number; currentStatus: string } | null>(null);
+  const [blockReason, setBlockReason] = useState('');
+  const [blockError, setBlockError] = useState('');
 
   useEffect(() => {
     const fetchUsers = async () => {
@@ -81,20 +84,41 @@ const Users: React.FC = () => {
   const toggleUserStatus = async (id: number) => {
     const user = users.find(u => u.id === id);
     if (!user) return;
-    const newStatus = user.status === 'Active' ? 'Blocked' : 'Active';
+    
+    // Show confirmation dialog
+    setBlockConfirm({ userId: id, currentStatus: user.status });
+  };
+
+  const confirmToggleStatus = async () => {
+    if (!blockConfirm) return;
+    
+    const { userId, currentStatus } = blockConfirm;
+    const newStatus = currentStatus === 'Active' ? 'Blocked' : 'Active';
+    
+    // Validate reason for blocking
+    if (newStatus === 'Blocked' && !blockReason.trim()) {
+      setBlockError('Please provide a reason for blocking this user.');
+      return;
+    }
+    
+    setBlockError('');
+    
     try {
-      await userService.updateStatus(id, newStatus);
+      await userService.updateStatus(userId, newStatus, blockReason.trim());
       setUsers(prev => prev.map(u => {
-        if (u.id === id) {
+        if (u.id === userId) {
           const updated = { ...u, status: newStatus as 'Active' | 'Blocked' };
-          if (selectedUser?.id === id) setSelectedUser(updated);
+          if (selectedUser?.id === userId) setSelectedUser(updated);
           return updated;
         }
         return u;
       }));
+      setBlockConfirm(null);
+      setBlockReason('');
+      setBlockError('');
     } catch (err) {
       console.error('Failed to update user status:', err);
-      alert('Failed to update user status. Please try again.');
+      setBlockError('Failed to update user status. Please try again.');
     }
   };
 
@@ -448,6 +472,74 @@ const Users: React.FC = () => {
                   className="flex-1 px-4 py-2.5 bg-rose-600 text-white rounded-xl font-bold text-sm hover:bg-rose-700 transition-colors"
                 >
                   Delete
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Block/Unblock Confirmation Modal */}
+      {blockConfirm && (
+        <>
+          <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-[130]" onClick={() => { setBlockConfirm(null); setBlockReason(''); }}></div>
+          <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white rounded-2xl shadow-2xl z-[140] w-full max-w-md p-6 animate-in fade-in zoom-in-95 duration-200">
+            <div>
+              <div className={`w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-4 ${
+                blockConfirm.currentStatus === 'Active' ? 'bg-rose-100' : 'bg-emerald-100'
+              }`}>
+                <span className={`material-symbols-outlined text-2xl ${
+                  blockConfirm.currentStatus === 'Active' ? 'text-rose-600' : 'text-emerald-600'
+                }`}>
+                  {blockConfirm.currentStatus === 'Active' ? 'block' : 'check_circle'}
+                </span>
+              </div>
+              <h3 className="text-lg font-bold text-slate-900 mb-2 text-center">
+                {blockConfirm.currentStatus === 'Active' ? 'Block User?' : 'Activate User?'}
+              </h3>
+              <p className="text-sm text-slate-600 mb-4 text-center">
+                {blockConfirm.currentStatus === 'Active' 
+                  ? 'User will not be able to login or place orders.'
+                  : 'User will regain full access to the platform.'}
+              </p>
+              
+              {blockConfirm.currentStatus === 'Active' && (
+                <div className="mb-6">
+                  <label className="block text-xs font-bold text-slate-700 mb-2">Reason for Blocking *</label>
+                  <textarea
+                    value={blockReason}
+                    onChange={(e) => { setBlockReason(e.target.value); setBlockError(''); }}
+                    placeholder="e.g., Fraudulent activity, Policy violation, etc."
+                    className={`w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-rose-500 focus:border-rose-500 outline-none resize-none ${
+                      blockError ? 'border-rose-500 bg-rose-50' : 'border-slate-200'
+                    }`}
+                    rows={3}
+                  />
+                  {blockError && (
+                    <p className="text-rose-600 text-xs mt-1 flex items-center gap-1">
+                      <span className="material-symbols-outlined text-sm">error</span>
+                      {blockError}
+                    </p>
+                  )}
+                </div>
+              )}
+              
+              <div className="flex gap-3">
+                <button
+                  onClick={() => { setBlockConfirm(null); setBlockReason(''); }}
+                  className="flex-1 px-4 py-2.5 bg-slate-100 text-slate-700 rounded-xl font-bold text-sm hover:bg-slate-200 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmToggleStatus}
+                  className={`flex-1 px-4 py-2.5 rounded-xl font-bold text-sm transition-colors ${
+                    blockConfirm.currentStatus === 'Active'
+                      ? 'bg-rose-600 text-white hover:bg-rose-700'
+                      : 'bg-emerald-600 text-white hover:bg-emerald-700'
+                  }`}
+                >
+                  {blockConfirm.currentStatus === 'Active' ? 'Block User' : 'Activate User'}
                 </button>
               </div>
             </div>

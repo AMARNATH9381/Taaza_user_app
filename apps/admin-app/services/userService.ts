@@ -10,11 +10,11 @@ export const userService = {
 
   getUserById: (id: number) => api.get(`/admin/users/${id}`),
 
-  updateStatus: async (id: number, status: 'Active' | 'Blocked') => {
-    return api.put('/admin/users/status', { id, status });
+  updateStatus: async (id: number, status: 'Active' | 'Blocked', reason?: string) => {
+    return api.put('/admin/users/status', { id, status, reason });
   },
 
-  blockUser: (id: number) => userService.updateStatus(id, 'Blocked'),
+  blockUser: (id: number, reason: string) => userService.updateStatus(id, 'Blocked', reason),
 
   unblockUser: (id: number) => userService.updateStatus(id, 'Active'),
 

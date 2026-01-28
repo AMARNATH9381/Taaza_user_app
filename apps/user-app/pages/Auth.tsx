@@ -107,6 +107,16 @@ const Login: React.FC = () => {
   const [suggestion, setSuggestion] = useState('');
   const [shake, setShake] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
+  const [blockMessage, setBlockMessage] = useState('');
+
+  useEffect(() => {
+    // Check if user was redirected due to account being blocked
+    const message = localStorage.getItem('taaza_block_message');
+    if (message) {
+      setBlockMessage(message);
+      localStorage.removeItem('taaza_block_message');
+    }
+  }, []);
 
   // Common email domain typos dictionary
   const getTypoSuggestion = (emailStr: string) => {
@@ -178,6 +188,7 @@ const Login: React.FC = () => {
   const handleSendOtp = () => {
     if (validate()) {
       setIsLoading(true);
+      setBlockMessage(''); // Clear any previous block message
 
       fetch('/api/send-otp', {
         method: 'POST',
@@ -234,6 +245,16 @@ const Login: React.FC = () => {
           </p>
 
           <div className="bg-white/10 backdrop-blur-md p-6 rounded-2xl border border-white/10 shadow-xl">
+            {/* Account Blocked Message */}
+            {blockMessage && (
+              <div className="mb-6 p-4 bg-red-900/30 border border-red-500/30 rounded-xl">
+                <div className="flex items-center gap-2 text-red-200 text-sm font-medium">
+                  <span className="material-symbols-outlined text-lg">block</span>
+                  <span className="font-bold">{blockMessage}</span>
+                </div>
+              </div>
+            )}
+            
             <h2 className="text-xl font-medium text-white mb-6">Login or Sign up</h2>
 
             <div className="relative mb-8">
@@ -258,7 +279,7 @@ const Login: React.FC = () => {
 
               {/* Error Message */}
               {error && (
-                <div className="absolute -bottom-6 left-0 flex items-center gap-1 text-red-300 text-xs animate-slide-up font-medium">
+                <div className="absolute -bottom-7 left-0 right-0 flex items-center justify-center gap-1 text-red-300 text-xs animate-slide-up font-medium bg-red-900/20 p-2 rounded-lg border border-red-500/20">
                   <span className="material-symbols-outlined text-sm">error</span>
                   {error}
                 </div>
@@ -322,6 +343,7 @@ const OTP: React.FC = () => {
   const [timer, setTimer] = useState(30);
   const [isVerifying, setIsVerifying] = useState(false);
   const [shake, setShake] = useState(false);
+  const [error, setError] = useState('');
   const inputsRef = useRef<(HTMLInputElement | null)[]>([]);
   const userEmail = localStorage.getItem('taaza_user_email') || 'user@example.com';
 
@@ -389,6 +411,7 @@ const OTP: React.FC = () => {
   const verifyOtp = (currentOtp: string[]) => {
     if (currentOtp.join('').length === 6) {
       setIsVerifying(true);
+      setError('');
 
       const code = currentOtp.join('');
       fetch('/api/verify-otp', {
@@ -396,10 +419,7 @@ const OTP: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: userEmail, code })
       })
-        .then(res => {
-          if (!res.ok) throw new Error('Invalid OTP');
-          return res.json();
-        })
+        .then(res => res.json())
         .then(data => {
           setIsVerifying(false);
           if (data.success) {
@@ -418,10 +438,19 @@ const OTP: React.FC = () => {
                 })
                 .catch(() => navigate('/auth/welcome'));
             }
+          } else if (data.blocked) {
+            // User is blocked, redirect to login with error message
+            localStorage.setItem('taaza_block_message', data.message);
+            navigate('/auth/login');
+          } else {
+            setError('Invalid OTP');
+            setShake(true);
+            setTimeout(() => setShake(false), 500);
           }
         })
         .catch(err => {
           setIsVerifying(false);
+          setError('Invalid or expired OTP');
           setShake(true);
           setTimeout(() => setShake(false), 500);
           console.error(err);

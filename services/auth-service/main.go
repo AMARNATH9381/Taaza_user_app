@@ -56,6 +56,7 @@ func initSchema() {
 		dob DATE,
 		gender TEXT,
 		status TEXT DEFAULT 'Active',
+		block_reason TEXT,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
@@ -88,6 +89,9 @@ func initSchema() {
 	
 	// Add status column if it doesn't exist (for existing tables)
 	db.Exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'Active'")
+	
+	// Add block_reason column if it doesn't exist
+	db.Exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS block_reason TEXT")
 	
 	// Add role column if it doesn't exist
 	db.Exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'user'")
@@ -461,12 +465,25 @@ func verifyOTPHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if user exists and get role
+	// Check if user exists and get role and status
 	var count int
-	var role string
-	err = db.QueryRow("SELECT COUNT(*), COALESCE(MAX(role), 'user') FROM users WHERE email = $1", req.Email).Scan(&count, &role)
+	var role, status string
+	err = db.QueryRow("SELECT COUNT(*), COALESCE(MAX(role), 'user'), COALESCE(MAX(status), 'Active') FROM users WHERE email = $1", req.Email).Scan(&count, &role, &status)
 	if err != nil {
 		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+
+	// Check if user is blocked
+	if count > 0 && status == "Blocked" {
+		// Always show generic message to user, don't expose admin's reason
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Account Restricted",
+			"blocked": true,
+		})
 		return
 	}
 
@@ -524,9 +541,10 @@ func profileHandler(w http.ResponseWriter, r *http.Request) {
 		var u User
 		var dob sql.NullString
 		var gender sql.NullString
+		var status, blockReason sql.NullString
 
-		err := db.QueryRow("SELECT id, email, mobile, name, dob, gender, created_at FROM users WHERE email = $1", email).
-			Scan(&u.ID, &u.Email, &u.Mobile, &u.Name, &dob, &gender, &u.CreatedAt)
+		err := db.QueryRow("SELECT id, email, mobile, name, dob, gender, COALESCE(status, 'Active'), COALESCE(block_reason, ''), created_at FROM users WHERE email = $1", email).
+			Scan(&u.ID, &u.Email, &u.Mobile, &u.Name, &dob, &gender, &status, &blockReason, &u.CreatedAt)
 		
 		if err == sql.ErrNoRows {
 			http.Error(w, "User not found", http.StatusNotFound)
@@ -536,8 +554,23 @@ func profileHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Check if user is blocked
+		if status.Valid && status.String == "Blocked" {
+			// Always show generic message to user, don't expose admin's reason
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"message": "Account Restricted",
+				"status":  "Blocked",
+				"blocked": true,
+			})
+			return
+		}
+
 		if dob.Valid { u.DOB = dob.String }
 		if gender.Valid { u.Gender = gender.String }
+		if status.Valid { u.Status = status.String }
 
 		json.NewEncoder(w).Encode(u)
 
@@ -578,6 +611,7 @@ func profileHandler(w http.ResponseWriter, r *http.Request) {
 type UpdateStatusRequest struct {
 	ID     int    `json:"id"`
 	Status string `json:"status"`
+	Reason string `json:"reason"`
 }
 
 func listUsersHandler(w http.ResponseWriter, r *http.Request) {
@@ -636,7 +670,21 @@ func updateUserStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := db.Exec("UPDATE users SET status = $1, updated_at = NOW() WHERE id = $2", req.Status, req.ID)
+	// Validate reason for blocking
+	if req.Status == "Blocked" && req.Reason == "" {
+		http.Error(w, "Reason is required when blocking a user", http.StatusBadRequest)
+		return
+	}
+
+	var result sql.Result
+	var err error
+
+	if req.Status == "Blocked" {
+		result, err = db.Exec("UPDATE users SET status = $1, block_reason = $2, updated_at = NOW() WHERE id = $3", req.Status, req.Reason, req.ID)
+	} else {
+		// Clear block reason when activating
+		result, err = db.Exec("UPDATE users SET status = $1, block_reason = NULL, updated_at = NOW() WHERE id = $2", req.Status, req.ID)
+	}
 	if err != nil {
 		log.Println("Error updating user status:", err)
 		http.Error(w, "Failed to update status", http.StatusInternalServerError)

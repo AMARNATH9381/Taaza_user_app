@@ -5,11 +5,34 @@ const Splash: React.FC = () => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    const timer = setTimeout(() => {
-      // Check if user is logged in (mock)
+    const timer = setTimeout(async () => {
+      // Check if user is logged in
       const user = localStorage.getItem('taaza_user_name');
-      if (user) {
-        navigate('/home');
+      const email = localStorage.getItem('taaza_user_email');
+      
+      if (user && email) {
+        try {
+          // Check if user is still active
+          const response = await fetch(`/api/profile?email=${email}`);
+          
+          if (response.status === 403) {
+            // User is blocked
+            const data = await response.json();
+            localStorage.removeItem('taaza_auth_token');
+            localStorage.removeItem('taaza_user_name');
+            localStorage.setItem('taaza_block_message', 'Account Restricted');
+            navigate('/auth/login');
+          } else if (response.ok) {
+            // User is active, proceed to home
+            navigate('/home');
+          } else {
+            // Other error, go to onboarding
+            navigate('/auth/onboarding');
+          }
+        } catch (error) {
+          console.error('Error checking user status:', error);
+          navigate('/home'); // Fallback to home if API fails
+        }
       } else {
         navigate('/auth/onboarding');
       }
