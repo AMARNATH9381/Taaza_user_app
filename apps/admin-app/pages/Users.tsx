@@ -10,10 +10,12 @@ const Users: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState('All');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [sortBy, setSortBy] = useState<'name' | 'date'>('date');
 
   // User addresses state
   const [userAddresses, setUserAddresses] = useState<any[]>([]);
   const [loadingAddresses, setLoadingAddresses] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null);
 
   useEffect(() => {
     const fetchUsers = async () => {
@@ -57,14 +59,24 @@ const Users: React.FC = () => {
   }, [selectedUser]);
 
   const filteredUsers = useMemo(() => {
-    return users.filter(user => {
+    let filtered = users.filter(user => {
       const matchesSearch = user.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
         user.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
         user.mobile?.includes(searchTerm);
       const matchesStatus = statusFilter === 'All' || user.status === statusFilter;
       return matchesSearch && matchesStatus;
     });
-  }, [users, searchTerm, statusFilter]);
+
+    // Sort
+    filtered.sort((a, b) => {
+      if (sortBy === 'name') {
+        return (a.name || '').localeCompare(b.name || '');
+      }
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+    });
+
+    return filtered;
+  }, [users, searchTerm, statusFilter, sortBy]);
 
   const toggleUserStatus = async (id: number) => {
     const user = users.find(u => u.id === id);
@@ -100,12 +112,12 @@ const Users: React.FC = () => {
   };
 
   const handleDeleteAddress = async (id: number) => {
-    if (!confirm('Are you sure you want to delete this address?')) return;
     try {
       const res = await fetch(`/api/addresses?id=${id}`, { method: 'DELETE' });
       const data = await res.json();
       if (data.success) {
         setUserAddresses(prev => prev.filter(a => a.id !== id));
+        setDeleteConfirm(null);
       } else {
         alert('Failed to delete address');
       }
@@ -226,10 +238,20 @@ const Users: React.FC = () => {
           <table className="w-full text-left">
             <thead>
               <tr className="text-[9px] text-slate-400 uppercase font-bold tracking-wider border-b border-slate-100 bg-slate-50/50">
-                <th className="px-4 py-3">Customer</th>
+                <th className="px-4 py-3">
+                  <button onClick={() => setSortBy('name')} className="flex items-center gap-1 hover:text-zepto-blue transition-colors">
+                    Customer
+                    {sortBy === 'name' && <span className="material-symbols-outlined text-xs">arrow_downward</span>}
+                  </button>
+                </th>
                 <th className="px-4 py-3">Contact</th>
                 <th className="px-4 py-3">Gender</th>
-                <th className="px-4 py-3">Joined</th>
+                <th className="px-4 py-3">
+                  <button onClick={() => setSortBy('date')} className="flex items-center gap-1 hover:text-zepto-blue transition-colors">
+                    Joined
+                    {sortBy === 'date' && <span className="material-symbols-outlined text-xs">arrow_downward</span>}
+                  </button>
+                </th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3 text-right">View</th>
               </tr>
@@ -339,7 +361,10 @@ const Users: React.FC = () => {
 
               {/* Saved Addresses */}
               <div className="space-y-2 pt-2">
-                <p className="text-[9px] font-bold text-slate-400 uppercase">Saved Addresses</p>
+                <div className="flex items-center justify-between">
+                  <p className="text-[9px] font-bold text-slate-400 uppercase">Saved Addresses</p>
+                  <span className="text-[9px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-bold">{userAddresses.length}</span>
+                </div>
                 {loadingAddresses ? (
                   <div className="flex items-center justify-center py-4">
                     <span className="material-symbols-outlined animate-spin text-slate-400">progress_activity</span>
@@ -350,7 +375,7 @@ const Users: React.FC = () => {
                     <p className="text-xs text-slate-400">No addresses saved</p>
                   </div>
                 ) : (
-                  <div className="space-y-2 max-h-48 overflow-y-auto">
+                  <div className="space-y-2 max-h-64 overflow-y-auto">
                     {userAddresses.map((addr: any) => (
                       <div key={addr.id} className="bg-slate-50 p-3 rounded-xl">
                         <div className="flex items-start gap-2">
@@ -368,7 +393,7 @@ const Users: React.FC = () => {
                             <p className="text-[9px] text-slate-400 mt-1">{addr.receiver_name} • {addr.receiver_phone}</p>
                           </div>
                           <button
-                            onClick={(e) => { e.stopPropagation(); handleDeleteAddress(addr.id); }}
+                            onClick={(e) => { e.stopPropagation(); setDeleteConfirm(addr.id); }}
                             className="p-1.5 hover:bg-rose-100 rounded-lg text-rose-400 hover:text-rose-600 transition-colors self-start"
                             title="Delete Address"
                           >
@@ -393,6 +418,36 @@ const Users: React.FC = () => {
                 >
                   <span className="material-symbols-outlined text-base">{selectedUser.status === 'Active' ? 'block' : 'check_circle'}</span>
                   {selectedUser.status === 'Active' ? 'Block User' : 'Activate User'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {deleteConfirm && (
+        <>
+          <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-[130]" onClick={() => setDeleteConfirm(null)}></div>
+          <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white rounded-2xl shadow-2xl z-[140] w-full max-w-sm p-6 animate-in fade-in zoom-in-95 duration-200">
+            <div className="text-center">
+              <div className="w-12 h-12 bg-rose-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <span className="material-symbols-outlined text-rose-600 text-2xl">delete</span>
+              </div>
+              <h3 className="text-lg font-bold text-slate-900 mb-2">Delete Address?</h3>
+              <p className="text-sm text-slate-600 mb-6">This action cannot be undone. The address will be permanently removed.</p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setDeleteConfirm(null)}
+                  className="flex-1 px-4 py-2.5 bg-slate-100 text-slate-700 rounded-xl font-bold text-sm hover:bg-slate-200 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => handleDeleteAddress(deleteConfirm)}
+                  className="flex-1 px-4 py-2.5 bg-rose-600 text-white rounded-xl font-bold text-sm hover:bg-rose-700 transition-colors"
+                >
+                  Delete
                 </button>
               </div>
             </div>

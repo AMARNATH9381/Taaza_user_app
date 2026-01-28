@@ -16,6 +16,7 @@ interface AuthContextType {
   verifyOTP: (email: string, otp: string) => Promise<void>;
   updateUser: (data: { name: string; dob: string; gender: string }) => Promise<void>;
   logout: () => void;
+  loading: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -23,14 +24,23 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [user, setUser] = useState<UserInfo | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
 
   useEffect(() => {
     const token = localStorage.getItem('taaza_token');
     const savedUser = localStorage.getItem('taaza_user');
     if (token && savedUser) {
-      setIsAuthenticated(true);
-      setUser(JSON.parse(savedUser));
+      try {
+        const parsedUser = JSON.parse(savedUser);
+        setUser(parsedUser);
+        setIsAuthenticated(true);
+      } catch (error) {
+        console.error('Failed to parse user data:', error);
+        localStorage.removeItem('taaza_token');
+        localStorage.removeItem('taaza_user');
+      }
     }
+    setLoading(false);
   }, []);
 
   const sendOTP = async (email: string) => {
@@ -89,7 +99,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   return (
-    <AuthContext.Provider value={{ isAuthenticated, user, sendOTP, verifyOTP, updateUser, logout }}>
+    <AuthContext.Provider value={{ isAuthenticated, user, sendOTP, verifyOTP, updateUser, logout, loading }}>
       {children}
     </AuthContext.Provider>
   );
