@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Routes, Route, useNavigate } from 'react-router-dom';
 import { Header } from '../components/Layout';
-
+import L from 'leaflet';
 // --- Shared Helper for Toast Notifications ---
 const Toast: React.FC<{ message: string; onClose: () => void; type?: 'success' | 'error' }> = ({ message, onClose, type = 'success' }) => {
     useEffect(() => {
@@ -321,18 +321,15 @@ const Addresses: React.FC = () => {
     // Map Search State
     const [searchText, setSearchText] = useState('');
 
-    // Google Maps State
+    // Leaflet Map State
     const [coords, setCoords] = useState({ lat: 12.9716, lng: 77.5946 }); // Bangalore default
     const mapRef = useRef<HTMLDivElement>(null);
-    const streetViewRef = useRef<HTMLDivElement>(null);
     const searchInputRef = useRef<HTMLInputElement>(null);
-    const mapInstanceRef = useRef<any>(null);
-    const markerRef = useRef<any>(null);
-    const panoramaRef = useRef<any>(null);
+    const mapInstanceRef = useRef<L.Map | null>(null);
+    const markerRef = useRef<L.Marker | null>(null);
     const [isSaving, setIsSaving] = useState(false);
 
-    // Street View & Mobile Sheet State
-    const [showStreetView, setShowStreetView] = useState(false);
+    // Mobile Sheet State
     const [sheetExpanded, setSheetExpanded] = useState(true);
 
     // Get user email from localStorage
@@ -382,151 +379,148 @@ const Addresses: React.FC = () => {
         }
     }, []);
 
-    // Load Google Maps script
-    useEffect(() => {
-        if (view === 'add' && !(window as any).google?.maps) {
-            const script = document.createElement('script');
-            script.src = `https://maps.googleapis.com/maps/api/js?key=${(import.meta as any).env.VITE_GOOGLE_MAPS_API_KEY}&libraries=places`;
-            script.async = true;
-            script.onload = () => initMap();
-            document.head.appendChild(script);
-        } else if (view === 'add' && (window as any).google?.maps) {
-            initMap();
-        }
-    }, [view]);
+    // State for address search suggestions
+    const [suggestions, setSuggestions] = useState<any[]>([]);
+    const [showSuggestions, setShowSuggestions] = useState(false);
+    const searchTimeoutRef = useRef<any>(null);
 
-    // Autocomplete for Search
+    // Initialize Leaflet Map
     useEffect(() => {
-        if (view === 'add' && searchInputRef.current && (window as any).google?.maps) {
-            console.log('Initializing Google Places Autocomplete');
-            const autocomplete = new (window as any).google.maps.places.Autocomplete(searchInputRef.current, {
-                fields: ['geometry', 'formatted_address'],
+        if (view === 'add' && mapRef.current && !mapInstanceRef.current) {
+            // Fix Leaflet default marker icon issue
+            delete (L.Icon.Default.prototype as any)._getIconUrl;
+            L.Icon.Default.mergeOptions({
+                iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+                iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+                shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
             });
 
-            autocomplete.addListener('place_changed', () => {
-                const place = autocomplete.getPlace();
-                console.log('Place selected:', place);
-                if (!place.geometry || !place.geometry.location) return;
+            const map = L.map(mapRef.current, {
+                zoomControl: false // We'll add custom positioned zoom control
+            }).setView([coords.lat, coords.lng], 17);
 
-                const lat = place.geometry.location.lat();
-                const lng = place.geometry.location.lng();
-                const newCoords = { lat, lng };
+            // Add zoom control at top-right position (accessible and visible)
+            L.control.zoom({ position: 'topright' }).addTo(map);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors'
+            }).addTo(map);
 
+            const marker = L.marker([coords.lat, coords.lng], { draggable: true }).addTo(map);
+
+            marker.on('dragend', () => {
+                const pos = marker.getLatLng();
+                const newCoords = { lat: pos.lat, lng: pos.lng };
                 setCoords(newCoords);
-                setMapAddress(place.formatted_address || '');
-                setSearchText(place.formatted_address || '');
-
-                if (mapInstanceRef.current && markerRef.current) {
-                    const googleMaps = (window as any).google?.maps;
-                    const latLng = new googleMaps.LatLng(lat, lng);
-                    (mapInstanceRef.current as any).setCenter(latLng);
-                    (mapInstanceRef.current as any).setZoom(17);
-                    (markerRef.current as any).setPosition(latLng);
-                    (markerRef.current as any).setAnimation(googleMaps.Animation.BOUNCE);
-                    setTimeout(() => (markerRef.current as any).setAnimation(null), 1500);
-                }
+                reverseGeocode(newCoords);
             });
+
+            map.on('click', (e: L.LeafletMouseEvent) => {
+                const newCoords = { lat: e.latlng.lat, lng: e.latlng.lng };
+                setCoords(newCoords);
+                marker.setLatLng(e.latlng);
+                reverseGeocode(newCoords);
+            });
+
+            mapInstanceRef.current = map;
+            markerRef.current = marker;
+
+            // Initial reverse geocode
+            reverseGeocode(coords);
+
+            // Force map to recalculate size after render to prevent gray areas
+            setTimeout(() => {
+                map.invalidateSize();
+            }, 100);
         }
+
+        return () => {
+            if (mapInstanceRef.current && view !== 'add') {
+                mapInstanceRef.current.remove();
+                mapInstanceRef.current = null;
+                markerRef.current = null;
+            }
+        };
     }, [view]);
 
-    // Initialize Street View
-    const initStreetView = () => {
-        if (!streetViewRef.current || !(window as any).google?.maps) return;
 
-        panoramaRef.current = new (window as any).google.maps.StreetViewPanorama(streetViewRef.current, {
-            position: coords,
-            pov: { heading: 165, pitch: 0 },
-            zoom: 1,
-            addressControl: false,
-            fullscreenControl: false
-        });
+    // Get appropriate icon based on place type
+    const getPlaceIcon = (type: string, placeClass: string): string => {
+        if (['office', 'company', 'commercial', 'industrial'].includes(placeClass)) return 'business';
+        if (['shop', 'retail'].includes(placeClass)) return 'storefront';
+        if (placeClass === 'amenity') {
+            if (['hospital', 'clinic', 'doctors'].includes(type)) return 'local_hospital';
+            if (['school', 'college', 'university'].includes(type)) return 'school';
+            if (['restaurant', 'cafe', 'fast_food'].includes(type)) return 'restaurant';
+            if (['bank', 'atm'].includes(type)) return 'account_balance';
+            return 'place';
+        }
+        if (placeClass === 'building') return 'apartment';
+        if (placeClass === 'highway' || type === 'road' || type === 'street') return 'add_road';
+        if (['city', 'town', 'village', 'suburb', 'neighbourhood'].includes(type)) return 'location_city';
+        return 'location_on';
     };
 
-    // Toggle Street View
-    const toggleStreetView = () => {
-        setShowStreetView(!showStreetView);
-        if (!showStreetView) {
-            setTimeout(() => initStreetView(), 100);
+    // Handle address search with Nominatim (enhanced for POI, businesses, landmarks)
+    const handleSearchChange = (query: string) => {
+        setSearchText(query);
+
+        if (searchTimeoutRef.current) {
+            clearTimeout(searchTimeoutRef.current);
+        }
+
+        if (query.length < 2) {
+            setSuggestions([]);
+            setShowSuggestions(false);
+            return;
+        }
+
+        searchTimeoutRef.current = setTimeout(() => {
+            // Viewbox to bias results towards current location
+            const viewbox = `${coords.lng - 0.5},${coords.lat - 0.5},${coords.lng + 0.5},${coords.lat + 0.5}`;
+
+            fetch(`https://nominatim.openstreetmap.org/search?` +
+                `q=${encodeURIComponent(query)}` +
+                `&format=json&limit=8&countrycodes=in` +
+                `&addressdetails=1&extratags=1&namedetails=1` +
+                `&viewbox=${viewbox}&bounded=0`)
+                .then(res => res.json())
+                .then(results => {
+                    const enhanced = results.map((r: any) => ({
+                        ...r,
+                        icon: getPlaceIcon(r.type, r.class)
+                    }));
+                    setSuggestions(enhanced);
+                    setShowSuggestions(enhanced.length > 0);
+                })
+                .catch(err => console.error('Search error:', err));
+        }, 250);
+    };
+
+    // Select suggestion from dropdown
+    const selectSuggestion = (suggestion: any) => {
+        const newCoords = { lat: parseFloat(suggestion.lat), lng: parseFloat(suggestion.lon) };
+        setCoords(newCoords);
+        setMapAddress(suggestion.display_name);
+        setSearchText(suggestion.display_name);
+        setSuggestions([]);
+        setShowSuggestions(false);
+
+        if (mapInstanceRef.current && markerRef.current) {
+            mapInstanceRef.current.setView([newCoords.lat, newCoords.lng], 17);
+            markerRef.current.setLatLng([newCoords.lat, newCoords.lng]);
         }
     };
 
-    // Update Street View position when coords change
-    useEffect(() => {
-        if (showStreetView && panoramaRef.current) {
-            panoramaRef.current.setPosition(coords);
-        }
-    }, [coords, showStreetView]);
-
-    // Initialize Google Map
-    const initMap = () => {
-        if (!mapRef.current || !(window as any).google?.maps) return;
-        const googleMaps = (window as any).google.maps;
-
-        const map = new googleMaps.Map(mapRef.current, {
-            center: coords,
-            zoom: 17,
-            disableDefaultUI: true,
-            zoomControl: true,
-            styles: [
-                { featureType: 'poi', stylers: [{ visibility: 'off' }] },
-                { featureType: 'transit', elementType: 'labels', stylers: [{ visibility: 'simplified' }] }
-            ]
-        });
-
-        const marker = new googleMaps.Marker({
-            position: coords,
-            map,
-            draggable: true,
-            animation: googleMaps.Animation.DROP,
-            icon: {
-                path: "M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z",
-                fillColor: "#EA4335",
-                fillOpacity: 1,
-                strokeWeight: 1,
-                strokeColor: "#FFFFFF",
-                scale: 2,
-                anchor: new googleMaps.Point(12, 24),
-            }
-        });
-
-        marker.addListener('dragend', () => {
-            const pos = marker.getPosition();
-            if (pos) {
-                const newCoords = { lat: pos.lat(), lng: pos.lng() };
-                setCoords(newCoords);
-                reverseGeocode(newCoords);
-                marker.setAnimation(googleMaps.Animation.BOUNCE);
-                setTimeout(() => marker.setAnimation(null), 500);
-            }
-        });
-
-        // Click on map to place marker
-        map.addListener('click', (e: any) => {
-            if (e.latLng) {
-                const newCoords = { lat: e.latLng.lat(), lng: e.latLng.lng() };
-                setCoords(newCoords);
-                marker.setPosition(e.latLng);
-                reverseGeocode(newCoords);
-                marker.setAnimation(googleMaps.Animation.BOUNCE);
-                setTimeout(() => marker.setAnimation(null), 500);
-            }
-        });
-
-        mapInstanceRef.current = map;
-        markerRef.current = marker;
-    };
-
-    // Reverse Geocode
+    // Reverse Geocode using Nominatim
     const reverseGeocode = (position: { lat: number; lng: number }) => {
-        if (!(window as any).google?.maps) return;
-        const googleMaps = (window as any).google.maps;
-
-        const geocoder = new googleMaps.Geocoder();
-        geocoder.geocode({ location: position }, (results: any, status: any) => {
-            if (status === 'OK' && results && results[0]) {
-                setMapAddress(results[0].formatted_address);
-            }
-        });
+        fetch(`https://nominatim.openstreetmap.org/reverse?lat=${position.lat}&lon=${position.lng}&format=json`)
+            .then(res => res.json())
+            .then(data => {
+                if (data && data.display_name) {
+                    setMapAddress(data.display_name);
+                }
+            })
+            .catch(err => console.error('Reverse geocode error:', err));
     };
 
     // Save addresses to localStorage
@@ -547,7 +541,6 @@ const Addresses: React.FC = () => {
         setReceiverPhone(localStorage.getItem('taaza_mobile') || '');
         setSearchText('');
         setErrors({});
-        setShowStreetView(false);
         setView('add');
     };
 
@@ -571,7 +564,6 @@ const Addresses: React.FC = () => {
         if (addr.latitude && addr.longitude) {
             setCoords({ lat: addr.latitude, lng: addr.longitude });
         }
-        setShowStreetView(false);
         setView('add');
     };
 
@@ -626,15 +618,10 @@ const Addresses: React.FC = () => {
                     lng: position.coords.longitude
                 };
                 setCoords(newCoords);
-                const googleMaps = (window as any).google?.maps;
 
-                if (mapInstanceRef.current && markerRef.current && googleMaps) {
-                    const latLng = new googleMaps.LatLng(newCoords.lat, newCoords.lng);
-                    (mapInstanceRef.current as any).setCenter(latLng);
-                    (mapInstanceRef.current as any).setZoom(18);
-                    (markerRef.current as any).setPosition(latLng);
-                    (markerRef.current as any).setAnimation(googleMaps.Animation.BOUNCE);
-                    setTimeout(() => (markerRef.current as any)?.setAnimation(null), 1500);
+                if (mapInstanceRef.current && markerRef.current) {
+                    mapInstanceRef.current.setView([newCoords.lat, newCoords.lng], 18);
+                    markerRef.current.setLatLng([newCoords.lat, newCoords.lng]);
                 }
 
                 reverseGeocode(newCoords);
@@ -810,43 +797,45 @@ const Addresses: React.FC = () => {
                         {/* Map Container */}
                         <div
                             ref={mapRef}
-                            className={`absolute inset-0 ${showStreetView ? 'hidden' : 'block'}`}
-                        />
-
-                        {/* Street View Container */}
-                        <div
-                            ref={streetViewRef}
-                            className={`absolute inset-0 ${showStreetView ? 'block' : 'hidden'}`}
+                            className="absolute inset-0"
                         />
 
                         {/* Search Bar Overlay */}
-                        <div className="absolute top-4 left-4 right-4 z-10">
+                        <div className="absolute top-4 left-4 right-4 z-[1000]">
                             <div className="relative">
                                 <span className="absolute left-3 top-1/2 -translate-y-1/2 material-symbols-outlined text-gray-400">search</span>
                                 <input
                                     ref={searchInputRef}
                                     type="text"
                                     value={searchText}
-                                    onChange={(e) => setSearchText(e.target.value)}
+                                    onChange={(e) => handleSearchChange(e.target.value)}
+                                    onFocus={() => setShowSuggestions(suggestions.length > 0)}
+                                    onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
                                     placeholder="Search for area, street name..."
                                     className="w-full pl-10 pr-4 py-3 bg-white rounded-xl shadow-lg text-sm border-0 focus:ring-2 focus:ring-zepto-blue"
                                 />
+                                {/* Suggestions Dropdown */}
+                                {showSuggestions && suggestions.length > 0 && (
+                                    <div className="absolute top-full left-0 right-0 mt-1 bg-white rounded-xl shadow-lg max-h-60 overflow-y-auto z-[2000]">
+                                        {suggestions.map((s, idx) => (
+                                            <button
+                                                key={idx}
+                                                onMouseDown={() => selectSuggestion(s)}
+                                                className="w-full text-left px-4 py-3 hover:bg-gray-50 border-b border-gray-100 last:border-0"
+                                            >
+                                                <div className="flex items-start gap-2">
+                                                    <span className="material-symbols-outlined text-zepto-blue text-base mt-0.5">{s.icon || 'location_on'}</span>
+                                                    <p className="text-sm text-gray-800 line-clamp-2">{s.display_name}</p>
+                                                </div>
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
                             </div>
                         </div>
 
                         {/* Map Controls */}
-                        <div className="absolute bottom-4 right-4 z-10 flex flex-col gap-2">
-                            {/* Street View Toggle */}
-                            <button
-                                onClick={toggleStreetView}
-                                className={`p-3 rounded-full shadow-lg transition-all ${showStreetView
-                                    ? 'bg-zepto-blue text-white'
-                                    : 'bg-white text-gray-700 hover:bg-gray-50'
-                                    }`}
-                                title="Toggle Street View"
-                            >
-                                <span className="material-symbols-outlined">streetview</span>
-                            </button>
+                        <div className="absolute bottom-4 right-4 z-[1000] flex flex-col gap-2">
 
                             {/* Locate Me Button */}
                             <button
