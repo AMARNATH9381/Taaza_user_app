@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/smtp"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -81,6 +83,70 @@ func initSchema() {
 		is_default BOOLEAN DEFAULT false,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
+
+	-- Milk Subscriptions
+	CREATE TABLE IF NOT EXISTS milk_subscriptions (
+		id SERIAL PRIMARY KEY,
+		user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+		address_id INTEGER REFERENCES addresses(id),
+		status TEXT DEFAULT 'Active',
+		auto_pay BOOLEAN DEFAULT true,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+
+	-- Subscription Slots (Morning/Evening)
+	CREATE TABLE IF NOT EXISTS subscription_slots (
+		id SERIAL PRIMARY KEY,
+		subscription_id INTEGER REFERENCES milk_subscriptions(id) ON DELETE CASCADE,
+		slot_type TEXT NOT NULL,
+		milk_type TEXT NOT NULL,
+		quantity DECIMAL(4,2) NOT NULL,
+		time_slot TEXT NOT NULL,
+		frequency TEXT NOT NULL,
+		days TEXT[],
+		is_enabled BOOLEAN DEFAULT true
+	);
+
+	-- Daily Deliveries
+	CREATE TABLE IF NOT EXISTS deliveries (
+		id SERIAL PRIMARY KEY,
+		subscription_id INTEGER REFERENCES milk_subscriptions(id),
+		slot_id INTEGER REFERENCES subscription_slots(id),
+		user_id INTEGER REFERENCES users(id),
+		delivery_date DATE NOT NULL,
+		slot_type TEXT NOT NULL,
+		quantity DECIMAL(4,2) NOT NULL,
+		milk_type TEXT NOT NULL,
+		address TEXT,
+		customer_name TEXT,
+		status TEXT DEFAULT 'Pending',
+		delivered_at TIMESTAMP,
+		delivered_by TEXT,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+
+	-- Inventory
+	CREATE TABLE IF NOT EXISTS inventory (
+		id SERIAL PRIMARY KEY,
+		date DATE UNIQUE NOT NULL,
+		buffalo_stock DECIMAL(8,2) DEFAULT 0,
+		cow_stock DECIMAL(8,2) DEFAULT 0,
+		buffalo_sold DECIMAL(8,2) DEFAULT 0,
+		cow_sold DECIMAL(8,2) DEFAULT 0,
+		wastage DECIMAL(8,2) DEFAULT 0,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+
+	-- Pricing
+	CREATE TABLE IF NOT EXISTS pricing (
+		id SERIAL PRIMARY KEY,
+		milk_type TEXT UNIQUE NOT NULL,
+		price DECIMAL(8,2) NOT NULL,
+		previous_price DECIMAL(8,2),
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
 	`
 	_, err := db.Exec(query)
 	if err != nil {
@@ -110,8 +176,12 @@ func initSchema() {
 	} else {
 		log.Println("Seeded/Updated admin user: amarnathm9945@gmail.com")
 	}
+
+	// Seed default pricing
+	db.Exec(`INSERT INTO pricing (milk_type, price, previous_price) VALUES ('buffalo', 90, 85) ON CONFLICT (milk_type) DO NOTHING`)
+	db.Exec(`INSERT INTO pricing (milk_type, price, previous_price) VALUES ('cow', 60, 55) ON CONFLICT (milk_type) DO NOTHING`)
 	
-	log.Println("Schema initialized")
+	log.Println("Schema initialized with milk subscription tables")
 }
 
 // --- Models ---
@@ -146,6 +216,66 @@ type Address struct {
 	ReceiverPhone string  `json:"receiver_phone"`
 	IsDefault     bool    `json:"is_default"`
 	CreatedAt     string  `json:"created_at"`
+}
+
+// --- Milk Subscription Models ---
+type MilkSubscription struct {
+	ID           int                `json:"id"`
+	UserID       int                `json:"user_id"`
+	AddressID    int                `json:"address_id"`
+	Status       string             `json:"status"`
+	AutoPay      bool               `json:"auto_pay"`
+	CustomerName string             `json:"customer_name,omitempty"`
+	Address      string             `json:"address,omitempty"`
+	Slots        []SubscriptionSlot `json:"slots,omitempty"`
+	CreatedAt    string             `json:"created_at"`
+	UpdatedAt    string             `json:"updated_at"`
+}
+
+type SubscriptionSlot struct {
+	ID             int      `json:"id"`
+	SubscriptionID int      `json:"subscription_id"`
+	SlotType       string   `json:"slot_type"`
+	MilkType       string   `json:"milk_type"`
+	Quantity       float64  `json:"quantity"`
+	TimeSlot       string   `json:"time_slot"`
+	Frequency      string   `json:"frequency"`
+	Days           []string `json:"days"`
+	IsEnabled      bool     `json:"is_enabled"`
+}
+
+type Delivery struct {
+	ID             int     `json:"id"`
+	SubscriptionID int     `json:"subscription_id"`
+	SlotID         int     `json:"slot_id"`
+	UserID         int     `json:"user_id"`
+	DeliveryDate   string  `json:"delivery_date"`
+	SlotType       string  `json:"slot_type"`
+	Quantity       float64 `json:"quantity"`
+	MilkType       string  `json:"milk_type"`
+	Address        string  `json:"address"`
+	CustomerName   string  `json:"customer_name"`
+	Status         string  `json:"status"`
+	DeliveredAt    string  `json:"delivered_at,omitempty"`
+	DeliveredBy    string  `json:"delivered_by,omitempty"`
+}
+
+type InventoryEntry struct {
+	ID          int     `json:"id"`
+	Date        string  `json:"date"`
+	BuffaloStock float64 `json:"buffalo_stock"`
+	CowStock    float64 `json:"cow_stock"`
+	BuffaloSold float64 `json:"buffalo_sold"`
+	CowSold     float64 `json:"cow_sold"`
+	Wastage     float64 `json:"wastage"`
+}
+
+type Pricing struct {
+	ID            int     `json:"id"`
+	MilkType      string  `json:"milk_type"`
+	Price         float64 `json:"price"`
+	PreviousPrice float64 `json:"previous_price"`
+	UpdatedAt     string  `json:"updated_at"`
 }
 
 // --- Request/Response Types ---
@@ -916,20 +1046,736 @@ func adminUserAddressesHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(addresses)
 }
 
+// ============================================================================
+// MILK SUBSCRIPTION HANDLERS
+// ============================================================================
+
+// --- User Subscription Handlers ---
+
+func getSubscriptionHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	email := r.URL.Query().Get("email")
+	if email == "" {
+		http.Error(w, "Email required", http.StatusBadRequest)
+		return
+	}
+	
+	// Get user ID from email
+	var userID int
+	err := db.QueryRow("SELECT id FROM users WHERE email = $1", email).Scan(&userID)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"subscription": nil})
+		return
+	}
+	
+	// Get subscription
+	var sub MilkSubscription
+	var createdAt, updatedAt time.Time
+	err = db.QueryRow(`
+		SELECT ms.id, ms.user_id, ms.address_id, ms.status, ms.auto_pay, 
+		       COALESCE(u.name, ''), COALESCE(a.full_address, ''),
+		       ms.created_at, ms.updated_at
+		FROM milk_subscriptions ms
+		LEFT JOIN users u ON ms.user_id = u.id
+		LEFT JOIN addresses a ON ms.address_id = a.id
+		WHERE ms.user_id = $1 AND ms.status != 'Cancelled'
+		ORDER BY ms.created_at DESC LIMIT 1
+	`, userID).Scan(&sub.ID, &sub.UserID, &sub.AddressID, &sub.Status, &sub.AutoPay,
+		&sub.CustomerName, &sub.Address, &createdAt, &updatedAt)
+	
+	if err == sql.ErrNoRows {
+		json.NewEncoder(w).Encode(map[string]interface{}{"subscription": nil})
+		return
+	} else if err != nil {
+		log.Println("Error fetching subscription:", err)
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	
+	sub.CreatedAt = createdAt.Format("2006-01-02T15:04:05Z07:00")
+	sub.UpdatedAt = updatedAt.Format("2006-01-02T15:04:05Z07:00")
+	
+	// Get slots
+	rows, err := db.Query(`
+		SELECT id, subscription_id, slot_type, milk_type, quantity, time_slot, frequency, days, is_enabled
+		FROM subscription_slots WHERE subscription_id = $1
+	`, sub.ID)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var slot SubscriptionSlot
+			var daysStr sql.NullString
+			rows.Scan(&slot.ID, &slot.SubscriptionID, &slot.SlotType, &slot.MilkType,
+				&slot.Quantity, &slot.TimeSlot, &slot.Frequency, &daysStr, &slot.IsEnabled)
+			if daysStr.Valid && daysStr.String != "" {
+				// Parse PostgreSQL array format {Mon,Tue,Wed}
+				days := strings.Trim(daysStr.String, "{}")
+				if days != "" {
+					slot.Days = strings.Split(days, ",")
+				}
+			}
+			sub.Slots = append(sub.Slots, slot)
+		}
+	}
+	
+	json.NewEncoder(w).Encode(map[string]interface{}{"subscription": sub})
+}
+
+func createSubscriptionHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	var req struct {
+		Email     string `json:"email"`
+		AddressID int    `json:"address_id"`
+		AutoPay   bool   `json:"auto_pay"`
+		Slots     []struct {
+			SlotType  string   `json:"slot_type"`
+			MilkType  string   `json:"milk_type"`
+			Quantity  float64  `json:"quantity"`
+			TimeSlot  string   `json:"time_slot"`
+			Frequency string   `json:"frequency"`
+			Days      []string `json:"days"`
+			IsEnabled bool     `json:"is_enabled"`
+		} `json:"slots"`
+	}
+	
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	
+	// Get user ID
+	var userID int
+	err := db.QueryRow("SELECT id FROM users WHERE email = $1", req.Email).Scan(&userID)
+	if err != nil {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+	
+	// Cancel any existing active subscription
+	db.Exec("UPDATE milk_subscriptions SET status = 'Cancelled', updated_at = NOW() WHERE user_id = $1 AND status != 'Cancelled'", userID)
+	
+	// Create subscription
+	var subID int
+	err = db.QueryRow(`
+		INSERT INTO milk_subscriptions (user_id, address_id, auto_pay, status)
+		VALUES ($1, $2, $3, 'Active') RETURNING id
+	`, userID, req.AddressID, req.AutoPay).Scan(&subID)
+	
+	if err != nil {
+		log.Println("Error creating subscription:", err)
+		http.Error(w, "Failed to create subscription", http.StatusInternalServerError)
+		return
+	}
+	
+	// Create slots
+	for _, s := range req.Slots {
+		daysArr := "{" + strings.Join(s.Days, ",") + "}"
+		_, err = db.Exec(`
+			INSERT INTO subscription_slots (subscription_id, slot_type, milk_type, quantity, time_slot, frequency, days, is_enabled)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		`, subID, s.SlotType, s.MilkType, s.Quantity, s.TimeSlot, s.Frequency, daysArr, s.IsEnabled)
+		if err != nil {
+			log.Println("Error creating slot:", err)
+		}
+	}
+	
+	// Generate deliveries for next 7 days
+	generateDeliveries(subID, userID, 7)
+	
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "id": subID})
+}
+
+func updateSubscriptionHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
+	if r.Method != "PUT" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	var req struct {
+		ID        int    `json:"id"`
+		Status    string `json:"status"`
+		AddressID int    `json:"address_id"`
+		AutoPay   bool   `json:"auto_pay"`
+		Slots     []struct {
+			ID        int      `json:"id"`
+			SlotType  string   `json:"slot_type"`
+			MilkType  string   `json:"milk_type"`
+			Quantity  float64  `json:"quantity"`
+			TimeSlot  string   `json:"time_slot"`
+			Frequency string   `json:"frequency"`
+			Days      []string `json:"days"`
+			IsEnabled bool     `json:"is_enabled"`
+		} `json:"slots"`
+	}
+	
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	
+	// Update subscription
+	_, err := db.Exec(`
+		UPDATE milk_subscriptions SET status = $1, address_id = $2, auto_pay = $3, updated_at = NOW()
+		WHERE id = $4
+	`, req.Status, req.AddressID, req.AutoPay, req.ID)
+	
+	if err != nil {
+		http.Error(w, "Failed to update subscription", http.StatusInternalServerError)
+		return
+	}
+	
+	// Update slots
+	for _, s := range req.Slots {
+		daysArr := "{" + strings.Join(s.Days, ",") + "}"
+		if s.ID > 0 {
+			db.Exec(`
+				UPDATE subscription_slots SET milk_type = $1, quantity = $2, time_slot = $3, frequency = $4, days = $5, is_enabled = $6
+				WHERE id = $7
+			`, s.MilkType, s.Quantity, s.TimeSlot, s.Frequency, daysArr, s.IsEnabled, s.ID)
+		} else {
+			db.Exec(`
+				INSERT INTO subscription_slots (subscription_id, slot_type, milk_type, quantity, time_slot, frequency, days, is_enabled)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			`, req.ID, s.SlotType, s.MilkType, s.Quantity, s.TimeSlot, s.Frequency, daysArr, s.IsEnabled)
+		}
+	}
+	
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+}
+
+func generateDeliveries(subID, userID, days int) {
+	// Get subscription details
+	var addressText, customerName string
+	db.QueryRow(`
+		SELECT COALESCE(a.full_address, ''), COALESCE(u.name, '')
+		FROM milk_subscriptions ms
+		LEFT JOIN addresses a ON ms.address_id = a.id
+		LEFT JOIN users u ON ms.user_id = u.id
+		WHERE ms.id = $1
+	`, subID).Scan(&addressText, &customerName)
+	
+	// Get slots
+	rows, _ := db.Query(`SELECT id, slot_type, milk_type, quantity, frequency, days FROM subscription_slots WHERE subscription_id = $1 AND is_enabled = true`, subID)
+	defer rows.Close()
+	
+	type slotInfo struct {
+		id        int
+		slotType  string
+		milkType  string
+		quantity  float64
+		frequency string
+		days      string
+	}
+	var slots []slotInfo
+	for rows.Next() {
+		var s slotInfo
+		rows.Scan(&s.id, &s.slotType, &s.milkType, &s.quantity, &s.frequency, &s.days)
+		slots = append(slots, s)
+	}
+	
+	// Generate for next N days
+	for i := 0; i < days; i++ {
+		date := time.Now().AddDate(0, 0, i)
+		dayName := date.Weekday().String()[:3]
+		
+		for _, slot := range slots {
+			shouldDeliver := false
+			if slot.frequency == "daily" {
+				shouldDeliver = true
+			} else if slot.frequency == "alternate" {
+				// Check if day is in the list
+				shouldDeliver = strings.Contains(slot.days, dayName)
+			}
+			
+			if shouldDeliver {
+				// Check if delivery already exists
+				var exists int
+				db.QueryRow(`SELECT COUNT(*) FROM deliveries WHERE subscription_id = $1 AND slot_id = $2 AND delivery_date = $3`,
+					subID, slot.id, date.Format("2006-01-02")).Scan(&exists)
+				
+				if exists == 0 {
+					db.Exec(`
+						INSERT INTO deliveries (subscription_id, slot_id, user_id, delivery_date, slot_type, quantity, milk_type, address, customer_name, status)
+						VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'Pending')
+					`, subID, slot.id, userID, date.Format("2006-01-02"), slot.slotType, slot.quantity, slot.milkType, addressText, customerName)
+				}
+			}
+		}
+	}
+}
+
+func skipDeliveryHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	var req struct {
+		DeliveryID int `json:"delivery_id"`
+	}
+	
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	
+	_, err := db.Exec("UPDATE deliveries SET status = 'Skipped' WHERE id = $1", req.DeliveryID)
+	if err != nil {
+		http.Error(w, "Failed to skip delivery", http.StatusInternalServerError)
+		return
+	}
+	
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+}
+
+func getScheduleHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
+	email := r.URL.Query().Get("email")
+	if email == "" {
+		http.Error(w, "Email required", http.StatusBadRequest)
+		return
+	}
+	
+	var userID int
+	err := db.QueryRow("SELECT id FROM users WHERE email = $1", email).Scan(&userID)
+	if err != nil {
+		json.NewEncoder(w).Encode([]Delivery{})
+		return
+	}
+	
+	rows, err := db.Query(`
+		SELECT id, subscription_id, slot_id, user_id, delivery_date::text, slot_type, quantity, milk_type, 
+		       COALESCE(address, ''), COALESCE(customer_name, ''), status
+		FROM deliveries 
+		WHERE user_id = $1 AND delivery_date >= CURRENT_DATE AND delivery_date <= CURRENT_DATE + INTERVAL '7 days'
+		ORDER BY delivery_date, slot_type
+	`, userID)
+	
+	if err != nil {
+		log.Println("Error fetching schedule:", err)
+		json.NewEncoder(w).Encode([]Delivery{})
+		return
+	}
+	defer rows.Close()
+	
+	var deliveries []Delivery
+	for rows.Next() {
+		var d Delivery
+		rows.Scan(&d.ID, &d.SubscriptionID, &d.SlotID, &d.UserID, &d.DeliveryDate, &d.SlotType,
+			&d.Quantity, &d.MilkType, &d.Address, &d.CustomerName, &d.Status)
+		deliveries = append(deliveries, d)
+	}
+	
+	if deliveries == nil {
+		deliveries = []Delivery{}
+	}
+	json.NewEncoder(w).Encode(deliveries)
+}
+
+// --- Pricing Handler ---
+
+func getPricingHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
+	rows, err := db.Query(`SELECT id, milk_type, price, COALESCE(previous_price, 0), updated_at::text FROM pricing`)
+	if err != nil {
+		log.Println("Error fetching pricing:", err)
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+	
+	var prices []Pricing
+	for rows.Next() {
+		var p Pricing
+		rows.Scan(&p.ID, &p.MilkType, &p.Price, &p.PreviousPrice, &p.UpdatedAt)
+		prices = append(prices, p)
+	}
+	
+	if prices == nil {
+		prices = []Pricing{}
+	}
+	json.NewEncoder(w).Encode(prices)
+}
+
+// --- Admin Handlers ---
+
+func adminListSubscriptionsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	rows, err := db.Query(`
+		SELECT ms.id, ms.user_id, ms.address_id, ms.status, ms.auto_pay,
+		       COALESCE(u.name, 'Unknown'), COALESCE(a.full_address, ''),
+		       ms.created_at::text, ms.updated_at::text
+		FROM milk_subscriptions ms
+		LEFT JOIN users u ON ms.user_id = u.id
+		LEFT JOIN addresses a ON ms.address_id = a.id
+		WHERE ms.status != 'Cancelled'
+		ORDER BY ms.created_at DESC
+	`)
+	
+	if err != nil {
+		log.Println("Error fetching subscriptions:", err)
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+	
+	var subscriptions []MilkSubscription
+	for rows.Next() {
+		var sub MilkSubscription
+		rows.Scan(&sub.ID, &sub.UserID, &sub.AddressID, &sub.Status, &sub.AutoPay,
+			&sub.CustomerName, &sub.Address, &sub.CreatedAt, &sub.UpdatedAt)
+		
+		// Get total quantity for this subscription
+		slotRows, _ := db.Query(`SELECT slot_type, milk_type, quantity FROM subscription_slots WHERE subscription_id = $1 AND is_enabled = true`, sub.ID)
+		for slotRows.Next() {
+			var slot SubscriptionSlot
+			slotRows.Scan(&slot.SlotType, &slot.MilkType, &slot.Quantity)
+			sub.Slots = append(sub.Slots, slot)
+		}
+		slotRows.Close()
+		
+		subscriptions = append(subscriptions, sub)
+	}
+	
+	if subscriptions == nil {
+		subscriptions = []MilkSubscription{}
+	}
+	json.NewEncoder(w).Encode(subscriptions)
+}
+
+func adminUpdateSubscriptionStatusHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
+	if r.Method != "PUT" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	var req struct {
+		ID     int    `json:"id"`
+		Status string `json:"status"`
+	}
+	
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	
+	_, err := db.Exec("UPDATE milk_subscriptions SET status = $1, updated_at = NOW() WHERE id = $2", req.Status, req.ID)
+	if err != nil {
+		http.Error(w, "Failed to update status", http.StatusInternalServerError)
+		return
+	}
+	
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+}
+
+func adminDeliveriesHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
+	if r.Method == "GET" {
+		dateStr := r.URL.Query().Get("date")
+		if dateStr == "" {
+			dateStr = time.Now().Format("2006-01-02")
+		}
+		
+		rows, err := db.Query(`
+			SELECT id, subscription_id, slot_id, user_id, delivery_date::text, slot_type, quantity, milk_type,
+			       COALESCE(address, ''), COALESCE(customer_name, ''), status,
+			       COALESCE(delivered_at::text, ''), COALESCE(delivered_by, '')
+			FROM deliveries
+			WHERE delivery_date = $1
+			ORDER BY slot_type, customer_name
+		`, dateStr)
+		
+		if err != nil {
+			log.Println("Error fetching deliveries:", err)
+			http.Error(w, "Database error", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+		
+		var deliveries []Delivery
+		for rows.Next() {
+			var d Delivery
+			rows.Scan(&d.ID, &d.SubscriptionID, &d.SlotID, &d.UserID, &d.DeliveryDate, &d.SlotType,
+				&d.Quantity, &d.MilkType, &d.Address, &d.CustomerName, &d.Status, &d.DeliveredAt, &d.DeliveredBy)
+			deliveries = append(deliveries, d)
+		}
+		
+		if deliveries == nil {
+			deliveries = []Delivery{}
+		}
+		json.NewEncoder(w).Encode(deliveries)
+		
+	} else if r.Method == "PUT" {
+		var req struct {
+			ID          int    `json:"id"`
+			Status      string `json:"status"`
+			DeliveredBy string `json:"delivered_by"`
+		}
+		
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+		
+		if req.Status == "Delivered" {
+			db.Exec("UPDATE deliveries SET status = $1, delivered_at = NOW(), delivered_by = $2 WHERE id = $3",
+				req.Status, req.DeliveredBy, req.ID)
+		} else {
+			db.Exec("UPDATE deliveries SET status = $1 WHERE id = $2", req.Status, req.ID)
+		}
+		
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+	}
+}
+
+func adminInventoryHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
+	switch r.Method {
+	case "GET":
+		rows, err := db.Query(`
+			SELECT id, date::text, buffalo_stock, cow_stock, buffalo_sold, cow_sold, wastage
+			FROM inventory ORDER BY date DESC LIMIT 30
+		`)
+		if err != nil {
+			http.Error(w, "Database error", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+		
+		var inventory []InventoryEntry
+		for rows.Next() {
+			var inv InventoryEntry
+			rows.Scan(&inv.ID, &inv.Date, &inv.BuffaloStock, &inv.CowStock, &inv.BuffaloSold, &inv.CowSold, &inv.Wastage)
+			inventory = append(inventory, inv)
+		}
+		
+		if inventory == nil {
+			inventory = []InventoryEntry{}
+		}
+		json.NewEncoder(w).Encode(inventory)
+		
+	case "POST":
+		var req struct {
+			Date         string  `json:"date"`
+			BuffaloStock float64 `json:"buffalo_stock"`
+			CowStock     float64 `json:"cow_stock"`
+			Wastage      float64 `json:"wastage"`
+		}
+		
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+		
+		_, err := db.Exec(`
+			INSERT INTO inventory (date, buffalo_stock, cow_stock, wastage)
+			VALUES ($1, $2, $3, $4)
+			ON CONFLICT (date) DO UPDATE SET 
+				buffalo_stock = inventory.buffalo_stock + $2,
+				cow_stock = inventory.cow_stock + $3,
+				wastage = inventory.wastage + $4,
+				updated_at = NOW()
+		`, req.Date, req.BuffaloStock, req.CowStock, req.Wastage)
+		
+		if err != nil {
+			log.Println("Error adding inventory:", err)
+			http.Error(w, "Failed to add inventory", http.StatusInternalServerError)
+			return
+		}
+		
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+		
+	case "PUT":
+		var req struct {
+			ID           int     `json:"id"`
+			BuffaloStock float64 `json:"buffalo_stock"`
+			CowStock     float64 `json:"cow_stock"`
+			BuffaloSold  float64 `json:"buffalo_sold"`
+			CowSold      float64 `json:"cow_sold"`
+			Wastage      float64 `json:"wastage"`
+		}
+		
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+		
+		_, err := db.Exec(`
+			UPDATE inventory SET buffalo_stock = $1, cow_stock = $2, buffalo_sold = $3, cow_sold = $4, wastage = $5, updated_at = NOW()
+			WHERE id = $6
+		`, req.BuffaloStock, req.CowStock, req.BuffaloSold, req.CowSold, req.Wastage, req.ID)
+		
+		if err != nil {
+			http.Error(w, "Failed to update inventory", http.StatusInternalServerError)
+			return
+		}
+		
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+	}
+}
+
+func adminPricingHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
+	if r.Method == "GET" {
+		getPricingHandler(w, r)
+		return
+	}
+	
+	if r.Method == "PUT" {
+		var req struct {
+			MilkType string  `json:"milk_type"`
+			Price    float64 `json:"price"`
+		}
+		
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+		
+		_, err := db.Exec(`
+			UPDATE pricing SET previous_price = price, price = $1, updated_at = NOW()
+			WHERE milk_type = $2
+		`, req.Price, req.MilkType)
+		
+		if err != nil {
+			http.Error(w, "Failed to update pricing", http.StatusInternalServerError)
+			return
+		}
+		
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+	}
+}
+
+func adminAnalyticsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
+	// Get subscription stats
+	var activeCount, pausedCount int
+	db.QueryRow("SELECT COUNT(*) FROM milk_subscriptions WHERE status = 'Active'").Scan(&activeCount)
+	db.QueryRow("SELECT COUNT(*) FROM milk_subscriptions WHERE status = 'Paused'").Scan(&pausedCount)
+	
+	// Get daily demand
+	var buffaloTotal, cowTotal float64
+	db.QueryRow(`
+		SELECT COALESCE(SUM(CASE WHEN milk_type = 'buffalo' THEN quantity ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN milk_type = 'cow' THEN quantity ELSE 0 END), 0)
+		FROM subscription_slots ss
+		JOIN milk_subscriptions ms ON ss.subscription_id = ms.id
+		WHERE ms.status = 'Active' AND ss.is_enabled = true
+	`).Scan(&buffaloTotal, &cowTotal)
+	
+	// Get pricing for revenue calculation
+	var buffaloPrice, cowPrice float64
+	db.QueryRow("SELECT COALESCE(price, 90) FROM pricing WHERE milk_type = 'buffalo'").Scan(&buffaloPrice)
+	db.QueryRow("SELECT COALESCE(price, 60) FROM pricing WHERE milk_type = 'cow'").Scan(&cowPrice)
+	
+	dailyRevenue := (buffaloTotal * buffaloPrice) + (cowTotal * cowPrice)
+	
+	// Today's deliveries
+	var deliveredToday, pendingToday int
+	today := time.Now().Format("2006-01-02")
+	db.QueryRow("SELECT COUNT(*) FROM deliveries WHERE delivery_date = $1 AND status = 'Delivered'", today).Scan(&deliveredToday)
+	db.QueryRow("SELECT COUNT(*) FROM deliveries WHERE delivery_date = $1 AND status = 'Pending'", today).Scan(&pendingToday)
+	
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"active_subscriptions": activeCount,
+		"paused_subscriptions": pausedCount,
+		"total_subscriptions":  activeCount + pausedCount,
+		"buffalo_demand":       buffaloTotal,
+		"cow_demand":           cowTotal,
+		"total_demand":         buffaloTotal + cowTotal,
+		"buffalo_price":        buffaloPrice,
+		"cow_price":            cowPrice,
+		"daily_revenue":        dailyRevenue,
+		"monthly_revenue":      dailyRevenue * 30,
+		"delivered_today":      deliveredToday,
+		"pending_today":        pendingToday,
+	})
+}
+
+// ============================================================================
+// MAIN FUNCTION
+// ============================================================================
+
 func main() {
 	log.Println("Starting Auth Service...")
 	
 	initDB()
 	initSchema()
 
+	// Auth routes
 	http.HandleFunc("/send-otp", enableCORS(sendOTPHandler))
 	http.HandleFunc("/verify-otp", enableCORS(verifyOTPHandler))
 	http.HandleFunc("/register", enableCORS(registerHandler))
 	http.HandleFunc("/profile", enableCORS(profileHandler))
 	http.HandleFunc("/addresses", enableCORS(addressHandler))
+	
+	// Admin user routes
 	http.HandleFunc("/admin/users", enableCORS(listUsersHandler))
 	http.HandleFunc("/admin/users/status", enableCORS(updateUserStatusHandler))
 	http.HandleFunc("/admin/users/addresses", enableCORS(adminUserAddressesHandler))
+	
+	// User subscription routes
+	http.HandleFunc("/api/subscription", enableCORS(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case "GET":
+			getSubscriptionHandler(w, r)
+		case "POST":
+			createSubscriptionHandler(w, r)
+		case "PUT":
+			updateSubscriptionHandler(w, r)
+		case "DELETE":
+			// Cancel subscription
+			idStr := r.URL.Query().Get("id")
+			id, _ := strconv.Atoi(idStr)
+			db.Exec("UPDATE milk_subscriptions SET status = 'Cancelled', updated_at = NOW() WHERE id = $1", id)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+		case "OPTIONS":
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
+	http.HandleFunc("/api/subscription/skip", enableCORS(skipDeliveryHandler))
+	http.HandleFunc("/api/subscription/schedule", enableCORS(getScheduleHandler))
+	http.HandleFunc("/api/pricing", enableCORS(getPricingHandler))
+	
+	// Admin subscription routes
+	http.HandleFunc("/api/admin/subscriptions", enableCORS(adminListSubscriptionsHandler))
+	http.HandleFunc("/api/admin/subscriptions/status", enableCORS(adminUpdateSubscriptionStatusHandler))
+	http.HandleFunc("/api/admin/deliveries", enableCORS(adminDeliveriesHandler))
+	http.HandleFunc("/api/admin/inventory", enableCORS(adminInventoryHandler))
+	http.HandleFunc("/api/admin/pricing", enableCORS(adminPricingHandler))
+	http.HandleFunc("/api/admin/analytics", enableCORS(adminAnalyticsHandler))
 
 	port := os.Getenv("PORT")
 	if port == "" {

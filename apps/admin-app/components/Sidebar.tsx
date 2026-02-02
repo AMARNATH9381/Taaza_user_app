@@ -5,7 +5,7 @@ import { NavLink } from 'react-router-dom';
 const navItems = [
   { path: '/', label: 'Dashboard', icon: 'dashboard' },
   { path: '/orders', label: 'Orders', icon: 'receipt' },
-  { path: '/subscriptions', label: 'Subscriptions', icon: 'local_drink' },
+  { path: '/milk-management', label: 'Milk Management', icon: 'water_drop' },
   { path: '/products', label: 'Products', icon: 'inventory' },
   { path: '/users', label: 'Users', icon: 'people' },
   { path: '/settings', label: 'Settings', icon: 'settings' },
@@ -16,12 +16,12 @@ const Sidebar: React.FC<{ isOpen: boolean; onClose: () => void }> = ({ isOpen, o
     <>
       {/* Mobile Backdrop */}
       {isOpen && (
-        <div 
-          className="fixed inset-0 bg-black/50 z-40 lg:hidden" 
+        <div
+          className="fixed inset-0 bg-black/50 z-40 lg:hidden"
           onClick={onClose}
         />
       )}
-      
+
       <aside className={`
         fixed top-0 left-0 h-full w-64 bg-zepto-blue text-white z-50 transform transition-transform duration-300 ease-in-out
         ${isOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
@@ -35,7 +35,7 @@ const Sidebar: React.FC<{ isOpen: boolean; onClose: () => void }> = ({ isOpen, o
             <span className="material-symbols-outlined">close</span>
           </button>
         </div>
-        
+
         <nav className="p-4 space-y-2">
           {navItems.map((item) => (
             <NavLink
@@ -43,11 +43,11 @@ const Sidebar: React.FC<{ isOpen: boolean; onClose: () => void }> = ({ isOpen, o
               to={item.path}
               className={({ isActive }) => `
                 flex items-center gap-3 px-4 py-3 rounded-lg transition-colors
-                ${isActive 
-                  ? 'bg-zepto-yellow text-zepto-blue font-semibold shadow-lg' 
+                ${isActive
+                  ? 'bg-zepto-yellow text-zepto-blue font-semibold shadow-lg'
                   : 'text-white/70 hover:bg-white/10 hover:text-white'}
               `}
-              onClick={() => { if(window.innerWidth < 1024) onClose(); }}
+              onClick={() => { if (window.innerWidth < 1024) onClose(); }}
             >
               <span className="material-symbols-outlined">{item.icon}</span>
               <span>{item.label}</span>

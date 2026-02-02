@@ -4,7 +4,7 @@ import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import AdminLayout from './layouts/AdminLayout';
 import Dashboard from './pages/Dashboard';
 import Orders from './pages/Orders';
-import Subscriptions from './pages/Subscriptions';
+import MilkManagement from './pages/MilkManagement';
 import Products from './pages/Products';
 import Users from './pages/Users';
 import Settings from './pages/Settings';
@@ -41,7 +41,7 @@ const AppRoutes: React.FC = () => {
       }>
         <Route path="/" element={<Dashboard />} />
         <Route path="/orders" element={<Orders />} />
-        <Route path="/subscriptions" element={<Subscriptions />} />
+        <Route path="/milk-management" element={<MilkManagement />} />
         <Route path="/products" element={<Products />} />
         <Route path="/users" element={<Users />} />
         <Route path="/settings" element={<Settings />} />

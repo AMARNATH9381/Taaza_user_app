@@ -254,7 +254,7 @@ const Login: React.FC = () => {
                 </div>
               </div>
             )}
-            
+
             <h2 className="text-xl font-medium text-white mb-6">Login or Sign up</h2>
 
             <div className="relative mb-8">
@@ -433,6 +433,7 @@ const OTP: React.FC = () => {
               fetch(`/api/profile?email=${userEmail}`)
                 .then(res => res.json())
                 .then(user => {
+                  if (user.id) localStorage.setItem('taaza_user_id', user.id.toString());
                   if (user.name) localStorage.setItem('taaza_user_name', user.name);
                   navigate('/auth/welcome');
                 })
