@@ -420,17 +420,15 @@ const OTP: React.FC = () => {
         body: JSON.stringify({ email: userEmail, code })
       })
         .then(res => res.json())
-        .then(data => {
+            .then(data => {
           setIsVerifying(false);
           if (data.success) {
-            // Save token if needed, for now just flow
-            localStorage.setItem('taaza_auth_token', data.token); // Mock token
-
+            // Don't store token in localStorage; server sets httpOnly cookie
             if (data.isNewUser) {
               navigate('/auth/register');
             } else {
-              // Fetch profile to get name for welcome screen if existing
-              fetch(`/api/profile?email=${userEmail}`)
+              // Fetch profile to get name for welcome screen
+              fetch(`/api/profile`, { credentials: 'include' })
                 .then(res => res.json())
                 .then(user => {
                   if (user.id) localStorage.setItem('taaza_user_id', user.id.toString());

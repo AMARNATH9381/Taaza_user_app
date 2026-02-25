@@ -27,16 +27,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState<boolean>(true);
 
   useEffect(() => {
-    const token = localStorage.getItem('taaza_token');
     const savedUser = localStorage.getItem('taaza_user');
-    if (token && savedUser) {
+    if (savedUser) {
       try {
         const parsedUser = JSON.parse(savedUser);
         setUser(parsedUser);
         setIsAuthenticated(true);
       } catch (error) {
         console.error('Failed to parse user data:', error);
-        localStorage.removeItem('taaza_token');
         localStorage.removeItem('taaza_user');
       }
     }
@@ -69,7 +67,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     const userData = { name: 'Admin', email, role: data.role };
-    localStorage.setItem('taaza_token', data.token);
+    // Server sets httpOnly cookie for JWT; only store non-sensitive user info locally
     localStorage.setItem('taaza_user', JSON.stringify(userData));
     setIsAuthenticated(true);
     setUser(userData);
@@ -78,9 +76,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const updateUser = async (data: { name: string; dob: string; gender: string }) => {
     if (!user) throw new Error('Not authenticated');
 
-    const response = await fetch(`/api/profile?email=${encodeURIComponent(user.email)}`, {
+    const response = await fetch(`/api/profile`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify(data),
     });
 
@@ -92,10 +91,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logout = () => {
-    localStorage.removeItem('taaza_token');
-    localStorage.removeItem('taaza_user');
-    setIsAuthenticated(false);
-    setUser(null);
+    // Call server to clear httpOnly cookie, then clear local cache
+    fetch('/api/logout', { method: 'POST', credentials: 'include' }).finally(() => {
+      localStorage.removeItem('taaza_user');
+      setIsAuthenticated(false);
+      setUser(null);
+      window.location.href = '/auth/login';
+    });
   };
 
   return (

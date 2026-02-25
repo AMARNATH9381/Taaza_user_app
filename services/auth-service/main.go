@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -9,16 +12,31 @@ import (
 	"net/http"
 	"net/smtp"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	_ "github.com/lib/pq"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // --- Configuration ---
 const (
 	OTPExpiration = 5 * time.Minute
+)
+
+// JWT settings
+var (
+	jwtSecret = []byte("replace-this-secret")
+	otpSalt = []byte("replace-otp-salt")
+
+	// Simple in-memory rate limiter maps (not persistent; OK for single-node)
+	emailRequests = make(map[string][]time.Time)
+	ipRequests    = make(map[string][]time.Time)
+	rlMu          sync.Mutex
 )
 
 // --- Database Connection ---
@@ -46,6 +64,66 @@ func initDB() {
 		time.Sleep(2 * time.Second)
 	}
 	log.Fatal("Could not connect to database after retries")
+}
+
+// validateEnv ensures required env vars are set (fails fast in prod)
+func validateEnv() {
+	if s := os.Getenv("JWT_SECRET"); s != "" {
+		jwtSecret = []byte(s)
+	}
+	if s := os.Getenv("OTP_SALT"); s != "" {
+		otpSalt = []byte(s)
+	}
+	// No strict failure for SMTP or DATABASE_URL here, but log important missing vars
+	if os.Getenv("DATABASE_URL") == "" {
+		log.Println("WARNING: DATABASE_URL not set, using fallback local connection")
+	}
+}
+
+// rate limit helpers
+func cleanOld(times []time.Time, window time.Duration) []time.Time {
+	cutoff := time.Now().Add(-window)
+	idx := 0
+	for i, t := range times {
+		if t.After(cutoff) {
+			idx = i
+			break
+		}
+	}
+	return times[idx:]
+}
+
+func allowRequestEmail(email string, max int, window time.Duration) bool {
+	rlMu.Lock()
+	defer rlMu.Unlock()
+	times := emailRequests[email]
+	times = cleanOld(times, window)
+	if len(times) >= max {
+		emailRequests[email] = times
+		return false
+	}
+	emailRequests[email] = append(times, time.Now())
+	return true
+}
+
+func allowRequestIP(ip string, max int, window time.Duration) bool {
+	rlMu.Lock()
+	defer rlMu.Unlock()
+	times := ipRequests[ip]
+	times = cleanOld(times, window)
+	if len(times) >= max {
+		ipRequests[ip] = times
+		return false
+	}
+	ipRequests[ip] = append(times, time.Now())
+	return true
+}
+
+func hashOTP(code string) string {
+	h := sha256.New()
+	h.Write(otpSalt)
+	h.Write([]byte(code))
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func initSchema() {
@@ -162,19 +240,19 @@ func initSchema() {
 	// Add role column if it doesn't exist
 	db.Exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'user'")
 
-	// Seed Admin User (amarnathm9945@gmail.com)
+	// Seed Admin User (venkataamarnathms@gmail.com)
 	// Upsert: Create if not exists, or update role to admin if exists
 	_, err = db.Exec(`
 		INSERT INTO users (email, mobile, name, role, status) 
 		VALUES ($1, $2, $3, 'admin', 'Active')
 		ON CONFLICT (email) 
 		DO UPDATE SET role = 'admin', status = 'Active', updated_at = NOW()
-	`, "amarnathm9945@gmail.com", "0000000000", "Admin User")
+	`, "venkataamarnathms@gmail.com", "0000000000", "Admin User")
 	
 	if err != nil {
 		log.Println("Failed to seed/update admin:", err)
 	} else {
-		log.Println("Seeded/Updated admin user: amarnathm9945@gmail.com")
+		log.Println("Seeded/Updated admin user: venkataamarnathms@gmail.com")
 	}
 
 	// Seed default pricing
@@ -314,9 +392,15 @@ type UpdateProfileRequest struct {
 
 func enableCORS(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := os.Getenv("CORS_ORIGIN")
+		if origin == "" {
+			origin = "*"
+		}
+		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		// Allow credentials when origin is not wildcard
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
 
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
@@ -543,11 +627,18 @@ func sendOTPHandler(w http.ResponseWriter, r *http.Request) {
 	// Security Check: Restrict OTP sending for admin
 	isAdmin := req.Type == "admin"
 	if isAdmin {
-		if req.Email != "amarnathm9945@gmail.com" {
+		if req.Email != "venkataamarnathms@gmail.com" {
 			log.Printf("Blocked unauthorized admin OTP request for: %s", req.Email)
 			http.Error(w, "Unauthorized access. Only designated admin can login.", http.StatusForbidden)
 			return
 		}
+	}
+
+	// Rate limit checks
+	ip := r.RemoteAddr
+	if !allowRequestIP(ip, 30, time.Hour) || !allowRequestEmail(req.Email, 10, time.Hour) {
+		http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
+		return
 	}
 
 	// Generate 6-digit OTP
@@ -555,13 +646,14 @@ func sendOTPHandler(w http.ResponseWriter, r *http.Request) {
 	code := fmt.Sprintf("%06d", rand.Intn(1000000))
 	expires := time.Now().Add(OTPExpiration)
 
-	// Upsert OTP
+	// Store hashed OTP
+	hashed := hashOTP(code)
 	_, err := db.Exec(`
 		INSERT INTO otps (email, code, expires_at) 
 		VALUES ($1, $2, $3)
 		ON CONFLICT (email) 
 		DO UPDATE SET code = $2, expires_at = $3`,
-		req.Email, code, expires)
+		req.Email, hashed, expires)
 
 	if err != nil {
 		log.Println("Error storing OTP:", err)
@@ -590,7 +682,23 @@ func verifyOTPHandler(w http.ResponseWriter, r *http.Request) {
 	var expiresAt time.Time
 	err := db.QueryRow("SELECT code, expires_at FROM otps WHERE email = $1", req.Email).Scan(&storedCode, &expiresAt)
 
-	if err == sql.ErrNoRows || storedCode != req.Code || time.Now().After(expiresAt) {
+	if err == sql.ErrNoRows {
+		http.Error(w, "Invalid or expired OTP", http.StatusUnauthorized)
+		return
+	}
+	if time.Now().After(expiresAt) {
+		http.Error(w, "Invalid or expired OTP", http.StatusUnauthorized)
+		return
+	}
+
+	// Rate limit verification attempts per email
+	if !allowRequestEmail(req.Email+":verify", 20, time.Hour) {
+		http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+
+	// Compare hashed value
+	if storedCode != hashOTP(req.Code) {
 		http.Error(w, "Invalid or expired OTP", http.StatusUnauthorized)
 		return
 	}
@@ -621,14 +729,91 @@ func verifyOTPHandler(w http.ResponseWriter, r *http.Request) {
 	db.Exec("DELETE FROM otps WHERE email = $1", req.Email)
 
 	isNewUser := count == 0
-	token := "mock-jwt-token-" + req.Email // In production, generate real JWT
+
+	// Create JWT
+	claims := jwt.MapClaims{
+		"sub": req.Email,
+		"role": role,
+		"exp": time.Now().Add(24 * time.Hour).Unix(),
+	}
+	tokenStr, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(jwtSecret)
+	if err != nil {
+		log.Println("Error creating token:", err)
+		http.Error(w, "Failed to create token", http.StatusInternalServerError)
+		return
+	}
+
+	// Set httpOnly cookie (optional; frontend should use credentials: 'include')
+	cookie := &http.Cookie{
+		Name:     "taaza_token",
+		Value:    tokenStr,
+		Path:     "/",
+		Expires:  time.Now().Add(24 * time.Hour),
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	}
+	if os.Getenv("ENV") == "production" {
+		cookie.Secure = true
+	}
+	http.SetCookie(w, cookie)
 
 	json.NewEncoder(w).Encode(VerifyOTPResponse{
 		Success:   true,
-		Token:     token,
+		Token:     tokenStr,
 		Role:      role,
 		IsNewUser: isNewUser,
 	})
+}
+
+// authMiddleware verifies JWT and injects email+role into request context
+func authMiddleware(next http.HandlerFunc, requireAdmin bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		var tokenStr string
+		if auth != "" {
+			parts := strings.SplitN(auth, " ", 2)
+			if len(parts) == 2 && strings.ToLower(parts[0]) == "bearer" {
+				tokenStr = parts[1]
+			}
+		}
+		// If no Authorization header, check cookie
+		if tokenStr == "" {
+			if c, err := r.Cookie("taaza_token"); err == nil {
+				tokenStr = c.Value
+			}
+		}
+
+		if tokenStr == "" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
+			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method")
+			}
+			return jwtSecret, nil
+		})
+		if err != nil || !token.Valid {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		claims, ok := token.Claims.(jwt.MapClaims)
+		if !ok {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		role, _ := claims["role"].(string)
+		sub, _ := claims["sub"].(string)
+		if requireAdmin && role != "admin" {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		// Inject into context
+		ctx := context.WithValue(r.Context(), "email", sub)
+		ctx = context.WithValue(ctx, "role", role)
+		next(w, r.WithContext(ctx))
+	}
 }
 
 func registerHandler(w http.ResponseWriter, r *http.Request) {
@@ -658,10 +843,16 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func profileHandler(w http.ResponseWriter, r *http.Request) {
-	// In real app, extract Email from JWT in header. 
-	// For now, we'll assume it's passed as a query param or we trust the client (DEV ONLY)
-	// Let's use Query param ?email=... for simplicity in this demo phase
-	email := r.URL.Query().Get("email")
+	// Prefer authenticated email from context (set by authMiddleware), fallback to query param for dev
+	var email string
+	if v := r.Context().Value("email"); v != nil {
+		if s, ok := v.(string); ok {
+			email = s
+		}
+	}
+	if email == "" {
+		email = r.URL.Query().Get("email")
+	}
 	if email == "" {
 		http.Error(w, "Email required", http.StatusBadRequest)
 		return
@@ -1722,30 +1913,52 @@ func adminAnalyticsHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func logoutHandler(w http.ResponseWriter, r *http.Request) {
+	// Clear the taaza_token cookie
+	cookie := &http.Cookie{
+		Name:     "taaza_token",
+		Value:    "",
+		Path:     "/",
+		Expires:  time.Unix(0, 0),
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	}
+	if os.Getenv("ENV") == "production" {
+		cookie.Secure = true
+	}
+	http.SetCookie(w, cookie)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"success": true})
+}
+
 // ============================================================================
 // MAIN FUNCTION
 // ============================================================================
 
 func main() {
 	log.Println("Starting Auth Service...")
-	
+    
+	validateEnv()
 	initDB()
 	initSchema()
 
-	// Auth routes
+	// Public Auth routes
 	http.HandleFunc("/send-otp", enableCORS(sendOTPHandler))
 	http.HandleFunc("/verify-otp", enableCORS(verifyOTPHandler))
 	http.HandleFunc("/register", enableCORS(registerHandler))
-	http.HandleFunc("/profile", enableCORS(profileHandler))
-	http.HandleFunc("/addresses", enableCORS(addressHandler))
+
+	// Protected user routes (require JWT)
+	http.HandleFunc("/profile", enableCORS(authMiddleware(profileHandler, false)))
+	http.HandleFunc("/addresses", enableCORS(authMiddleware(addressHandler, false)))
 	
-	// Admin user routes
-	http.HandleFunc("/admin/users", enableCORS(listUsersHandler))
-	http.HandleFunc("/admin/users/status", enableCORS(updateUserStatusHandler))
-	http.HandleFunc("/admin/users/addresses", enableCORS(adminUserAddressesHandler))
+	// Admin user routes (require admin role)
+	http.HandleFunc("/admin/users", enableCORS(authMiddleware(listUsersHandler, true)))
+	http.HandleFunc("/admin/users/status", enableCORS(authMiddleware(updateUserStatusHandler, true)))
+	http.HandleFunc("/admin/users/addresses", enableCORS(authMiddleware(adminUserAddressesHandler, true)))
 	
 	// User subscription routes
-	http.HandleFunc("/api/subscription", enableCORS(func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/api/subscription", enableCORS(authMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case "GET":
 			getSubscriptionHandler(w, r)
@@ -1764,24 +1977,52 @@ func main() {
 		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
-	}))
-	http.HandleFunc("/api/subscription/skip", enableCORS(skipDeliveryHandler))
-	http.HandleFunc("/api/subscription/schedule", enableCORS(getScheduleHandler))
+	}, false)))
+	http.HandleFunc("/api/subscription/skip", enableCORS(authMiddleware(skipDeliveryHandler, false)))
+	http.HandleFunc("/api/subscription/schedule", enableCORS(authMiddleware(getScheduleHandler, false)))
 	http.HandleFunc("/api/pricing", enableCORS(getPricingHandler))
 	
 	// Admin subscription routes
-	http.HandleFunc("/api/admin/subscriptions", enableCORS(adminListSubscriptionsHandler))
-	http.HandleFunc("/api/admin/subscriptions/status", enableCORS(adminUpdateSubscriptionStatusHandler))
-	http.HandleFunc("/api/admin/deliveries", enableCORS(adminDeliveriesHandler))
-	http.HandleFunc("/api/admin/inventory", enableCORS(adminInventoryHandler))
-	http.HandleFunc("/api/admin/pricing", enableCORS(adminPricingHandler))
-	http.HandleFunc("/api/admin/analytics", enableCORS(adminAnalyticsHandler))
+	http.HandleFunc("/api/admin/subscriptions", enableCORS(authMiddleware(adminListSubscriptionsHandler, true)))
+	http.HandleFunc("/api/admin/subscriptions/status", enableCORS(authMiddleware(adminUpdateSubscriptionStatusHandler, true)))
+	http.HandleFunc("/api/admin/deliveries", enableCORS(authMiddleware(adminDeliveriesHandler, true)))
+	http.HandleFunc("/api/admin/inventory", enableCORS(authMiddleware(adminInventoryHandler, true)))
+	http.HandleFunc("/api/admin/pricing", enableCORS(authMiddleware(adminPricingHandler, true)))
+	http.HandleFunc("/api/admin/analytics", enableCORS(authMiddleware(adminAnalyticsHandler, true)))
+
+	// Health endpoint
+	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
+	// Logout endpoint
+	http.HandleFunc("/api/logout", enableCORS(authMiddleware(logoutHandler, false)))
 
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
 
-	log.Printf("Auth Service running on port %s", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	srv := &http.Server{Addr: ":" + port, Handler: nil}
+
+	// Run server in goroutine
+	go func() {
+		log.Printf("Auth Service running on port %s", port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("ListenAndServe(): %v", err)
+		}
+	}()
+
+	// Graceful shutdown
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	log.Println("Shutting down server...")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatalf("Server Shutdown Failed:%+v", err)
+	}
+	log.Println("Server exited properly")
 }

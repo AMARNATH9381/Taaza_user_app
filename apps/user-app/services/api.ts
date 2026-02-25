@@ -22,55 +22,55 @@ interface MilkSubscription {
 
 const API_BASE = '/api';
 
+async function fetchWithAuth(path: string, opts: RequestInit = {}) {
+    const res = await fetch(path, { ...opts, credentials: 'include', headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) } });
+    if (!res.ok) {
+        if (res.status === 401 || res.status === 403) {
+            // Ask server to clear cookie then clear client-side cached user info
+            try {
+                await fetch('/api/logout', { method: 'POST', credentials: 'include' });
+            } catch (e) {
+                // ignore
+            }
+            localStorage.removeItem('taaza_user_email');
+            localStorage.removeItem('taaza_user_name');
+            window.location.href = '/auth/login';
+            throw new Error('Unauthorized');
+        }
+        throw new Error(res.statusText || 'Request failed');
+    }
+    return res.json();
+}
+
 export const MilkService = {
     // Get current pricing
     getPricing: async () => {
-        const res = await fetch(`${API_BASE}/pricing`);
-        if (!res.ok) throw new Error('Failed to fetch pricing');
-        return res.json();
+        return fetchWithAuth(`${API_BASE}/pricing`);
     },
 
     // Get user's subscription
     getSubscription: async (userId: number) => {
-        const res = await fetch(`${API_BASE}/subscription?user_id=${userId}`);
-        if (!res.ok) {
-            if (res.status === 404) return null;
-            throw new Error('Failed to fetch subscription');
+        try {
+            return await fetchWithAuth(`${API_BASE}/subscription?user_id=${userId}`);
+        } catch (err: any) {
+            if (err.message === 'Not Found' || err.message === '404') return null;
+            throw err;
         }
-        return res.json();
     },
 
     // Create new subscription
     createSubscription: async (data: any) => {
-        const res = await fetch(`${API_BASE}/subscription`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data)
-        });
-        if (!res.ok) throw new Error('Failed to create subscription');
-        return res.json();
+        return fetchWithAuth(`${API_BASE}/subscription`, { method: 'POST', body: JSON.stringify(data) });
     },
 
     // Update subscription
     updateSubscription: async (data: any) => {
-        const res = await fetch(`${API_BASE}/subscription`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data)
-        });
-        if (!res.ok) throw new Error('Failed to update subscription');
-        return res.json();
+        return fetchWithAuth(`${API_BASE}/subscription`, { method: 'PUT', body: JSON.stringify(data) });
     },
 
     // Skip/Resume delivery
     skipDelivery: async (subscriptionId: number, date: string, skip: boolean) => {
-        const res = await fetch(`${API_BASE}/subscription/skip`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ subscription_id: subscriptionId, date, skip })
-        });
-        if (!res.ok) throw new Error('Failed to update delivery status');
-        return res.json();
+        return fetchWithAuth(`${API_BASE}/subscription/skip`, { method: 'POST', body: JSON.stringify({ subscription_id: subscriptionId, date, skip }) });
     }
 };
 
@@ -79,19 +79,11 @@ export const UserService = {
         // Since we don't have a dedicated get addresses API for users yet in main.go (only admin), 
         // we might rely on the profile or implement it. 
         // Wait, main.go has http.HandleFunc("/addresses", enableCORS(addressHandler))
-        const res = await fetch(`${API_BASE}/addresses?email=${email}`);
-        if (!res.ok) throw new Error('Failed to fetch addresses');
-        return res.json();
+        return fetchWithAuth(`${API_BASE}/addresses?email=${email}`);
     },
 
     saveAddress: async (data: any) => {
         const method = data.id && !data.id.toString().startsWith('temp') ? 'PUT' : 'POST';
-        const res = await fetch(`${API_BASE}/addresses`, {
-            method,
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data)
-        });
-        if (!res.ok) throw new Error('Failed to save address');
-        return res.json();
+        return fetchWithAuth(`${API_BASE}/addresses`, { method, body: JSON.stringify(data) });
     }
 };

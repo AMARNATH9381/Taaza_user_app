@@ -1,14 +1,23 @@
 
 // Real API implementation connecting to auth-service backend
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+const API_BASE_URL = '/api';
 
-// Simulated persistent storage for the session
+// Simulated persistent storage for non-sensitive data (user profile)
 const storage = {
   get: (key: string) => localStorage.getItem(key),
   set: (key: string, val: string) => localStorage.setItem(key, val),
   remove: (key: string) => localStorage.removeItem(key)
 };
+
+function handleAuthError(status: number) {
+  if (status === 401 || status === 403) {
+    // Clear client-side session info and redirect to login
+    storage.remove('taaza_token');
+    storage.remove('taaza_user');
+    window.location.href = '/auth/login';
+  }
+}
 
 export const api = {
   get: async (url: string) => {
@@ -16,13 +25,12 @@ export const api = {
 
     const response = await fetch(`${API_BASE_URL}${url}`, {
       method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${storage.get('taaza_token') || ''}`
-      }
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include'
     });
 
     if (!response.ok) {
+      handleAuthError(response.status);
       throw { status: response.status, message: response.statusText };
     }
 
@@ -38,7 +46,7 @@ export const api = {
       if (body.email === 'admin@taaza.com' && body.password === 'admin123') {
         const token = 'mock_jwt_token_' + Date.now();
         const user = { name: 'Super Admin', email: body.email, role: 'Admin' };
-        storage.set('taaza_token', token);
+        // For local mock, store user info but do not store sensitive token in localStorage
         storage.set('taaza_user', JSON.stringify(user));
         return { data: { token, user } };
       }
@@ -47,14 +55,13 @@ export const api = {
 
     const response = await fetch(`${API_BASE_URL}${url}`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${storage.get('taaza_token') || ''}`
-      },
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify(body)
     });
 
     if (!response.ok) {
+      handleAuthError(response.status);
       throw { status: response.status, message: response.statusText };
     }
 
@@ -67,14 +74,13 @@ export const api = {
 
     const response = await fetch(`${API_BASE_URL}${url}`, {
       method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${storage.get('taaza_token') || ''}`
-      },
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify(body)
     });
 
     if (!response.ok) {
+      handleAuthError(response.status);
       throw { status: response.status, message: response.statusText };
     }
 
@@ -87,13 +93,12 @@ export const api = {
 
     const response = await fetch(`${API_BASE_URL}${url}`, {
       method: 'DELETE',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${storage.get('taaza_token') || ''}`
-      }
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include'
     });
 
     if (!response.ok) {
+      handleAuthError(response.status);
       throw { status: response.status, message: response.statusText };
     }
 

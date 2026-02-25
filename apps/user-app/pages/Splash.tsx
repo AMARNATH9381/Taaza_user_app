@@ -18,7 +18,7 @@ const Splash: React.FC = () => {
           if (response.status === 403) {
             // User is blocked
             const data = await response.json();
-            localStorage.removeItem('taaza_auth_token');
+            try { await fetch('/api/logout', { method: 'POST', credentials: 'include' }); } catch (e) {}
             localStorage.removeItem('taaza_user_name');
             localStorage.setItem('taaza_block_message', 'Account Restricted');
             navigate('/auth/login');

@@ -53,6 +53,14 @@ Desktop.ini
 *.test
 *.out
 vendor/
+services/auth-service/auth-service
+
+# Temporary files
+q
+*.tmp
+
+# Metadata
+metadata.json
 
 # TypeScript
 *.tsbuildinfo

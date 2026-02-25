@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 
 const Login: React.FC = () => {
   const [step, setStep] = useState<1 | 2>(1);
-  const [email, setEmail] = useState('amarnathm9945@gmail.com'); // Default for dev convenience
+  const [email, setEmail] = useState('venkataamarnathms@gmail.com'); // Default for dev convenience
   const [otp, setOtp] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -71,7 +71,7 @@ const Login: React.FC = () => {
                 <input
                   type="email"
                   className="w-full pl-12 pr-4 py-4 bg-slate-100 border-none rounded-2xl outline-none focus:ring-4 focus:ring-zepto-blue/5 transition-all text-slate-900 font-medium"
-                  placeholder="amarnathm9945@gmail.com"
+                  placeholder="venkataamarnathms@gmail.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   required

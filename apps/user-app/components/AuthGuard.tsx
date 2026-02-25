@@ -11,28 +11,21 @@ const AuthGuard: React.FC<AuthGuardProps> = ({ children }) => {
 
   useEffect(() => {
     const checkUserStatus = async () => {
-      const token = localStorage.getItem('taaza_auth_token');
-      const email = localStorage.getItem('taaza_user_email');
-
-      if (!token || !email) {
-        navigate('/auth/login');
-        return;
-      }
-
       try {
-        // Check user status with backend
-        const response = await fetch(`/api/profile?email=${email}`);
-        const userData = await response.json();
-
-        if (response.status === 403 || userData.status === 'Blocked') {
-          // User is blocked, clear local storage and redirect to login
-          localStorage.removeItem('taaza_auth_token');
+        // Call protected profile endpoint; server will read JWT from cookie or Authorization
+        const response = await fetch('/api/profile', { credentials: 'include' });
+        if (response.status === 401 || response.status === 403) {
+          try { await fetch('/api/logout', { method: 'POST', credentials: 'include' }); } catch (e) {}
           localStorage.removeItem('taaza_user_name');
+          navigate('/auth/login');
+          return;
+        }
+        const userData = await response.json();
+        if (userData && userData.status === 'Blocked') {
           localStorage.setItem('taaza_block_message', 'Account Restricted');
           navigate('/auth/login');
           return;
         }
-
         setIsChecking(false);
       } catch (error) {
         console.error('Error checking user status:', error);
